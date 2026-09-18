@@ -28,6 +28,7 @@ defmodule Backend.GoodsIn do
 
   alias Backend.Accounts.User
   alias Backend.Audit
+  alias Backend.CustomerReturns.CustomerReturnLine
   alias Backend.GoodsIn.{Inspection, InspectionFile, InspectionItem}
   alias Backend.ListQueries
   alias Backend.Purchasing.{PurchaseOrder, PurchaseOrderLine}
@@ -63,7 +64,15 @@ defmodule Backend.GoodsIn do
               :quality_approver,
               :created_by,
               :updated_by,
-              items: [:purchase_order_line],
+              # RMA-backed inspections carry a customer_return + its
+              # lines instead of a PO. Preload both so the wizard can
+              # render either source without an extra fetch.
+              customer_return: [
+                :customer,
+                :customer_invoice,
+                lines: [item: :stock_uom]
+              ],
+              items: [:purchase_order_line, :customer_return_line],
               files: [:uploaded_by]
             ]
           )
@@ -142,7 +151,12 @@ defmodule Backend.GoodsIn do
       |> maybe_code_id_filter(code_id)
       |> ListQueries.apply_column_filters(column_filter, @inspection_sortable)
       |> ListQueries.apply_sort(sort, @inspection_sortable, @inspection_default_sort)
-      |> preload([:goods_in_operator, :quality_approver, purchase_order: :vendor])
+      |> preload([
+        :goods_in_operator,
+        :quality_approver,
+        purchase_order: :vendor,
+        customer_return: :customer
+      ])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
@@ -154,6 +168,13 @@ defmodule Backend.GoodsIn do
 
   defp maybe_status_filter(query, nil), do: query
   defp maybe_status_filter(query, ""), do: query
+
+  # "open" is a virtual status covering everything that still needs
+  # attention — drafts the operator hasn't finished + submitted rows
+  # awaiting QA. Powers the mobile "To do" tab so a single fetch
+  # returns both buckets.
+  defp maybe_status_filter(query, "open"),
+    do: where(query, [i], i.status in ["draft", "submitted"])
 
   defp maybe_status_filter(query, status)
        when is_binary(status) and status in @inspection_statuses do
@@ -225,6 +246,28 @@ defmodule Backend.GoodsIn do
         "updated_by_id" => actor.id
       })
 
+    insert_draft(actor, attrs)
+  end
+
+  @doc """
+  RMA-flavour draft — same table, same wizard, RMA source. Auto-
+  invoked by `Backend.CustomerReturns.mark_received/3` so operators
+  find the queued inspection on `/m/inspections` right after the
+  desk-side "Mark received" click.
+  """
+  def create_draft_for_rma(%User{} = actor, %Backend.CustomerReturns.CustomerReturn{} = rma) do
+    attrs = %{
+      "company_id" => rma.company_id,
+      "customer_return_id" => rma.id,
+      "delivery_date" => Date.utc_today(),
+      "created_by_id" => actor.id,
+      "updated_by_id" => actor.id
+    }
+
+    insert_draft(actor, attrs)
+  end
+
+  defp insert_draft(%User{} = actor, attrs) do
     %Inspection{}
     |> Inspection.create_changeset(attrs)
     |> Repo.insert()
@@ -349,22 +392,39 @@ defmodule Backend.GoodsIn do
         %PurchaseOrderLine{} = line,
         attrs
       ) do
+    do_upsert_item_decision(actor, i, "purchase_order_line_id", line.id, attrs)
+  end
+
+  def upsert_item_decision(
+        %User{} = actor,
+        %Inspection{status: "draft"} = i,
+        %CustomerReturnLine{} = line,
+        attrs
+      ) do
+    do_upsert_item_decision(actor, i, "customer_return_line_id", line.id, attrs)
+  end
+
+  def upsert_item_decision(_, %Inspection{}, _, _), do: {:error, :not_editable}
+
+  defp do_upsert_item_decision(%User{} = actor, %Inspection{} = i, line_key, line_id, attrs) do
     attrs =
       attrs
       |> stringify_keys()
       |> Map.merge(%{
         "company_id" => i.company_id,
         "goods_in_inspection_id" => i.id,
-        "purchase_order_line_id" => line.id
+        line_key => line_id
       })
       |> reconcile_qty_from_packs()
+
+    line_atom = String.to_existing_atom(line_key)
 
     existing =
       Repo.one(
         from(it in InspectionItem,
           where:
             it.goods_in_inspection_id == ^i.id and
-              it.purchase_order_line_id == ^line.id
+              field(it, ^line_atom) == ^line_id
         )
       )
 
@@ -382,8 +442,6 @@ defmodule Backend.GoodsIn do
         |> after_item_write(actor, "updated")
     end
   end
-
-  def upsert_item_decision(_, %Inspection{}, _, _), do: {:error, :not_editable}
 
   @doc """
   QC-side edit of a per-line decision after the operator has signed
@@ -536,6 +594,65 @@ defmodule Backend.GoodsIn do
             end
 
             {:ok, updated}
+
+          {:error, _} = err ->
+            err
+        end
+    end
+  end
+
+  # RMA-flavour QC edit: no PO to reconcile, so we skip the whole
+  # `Backend.Purchasing.reconcile_line_after_qc_edit` pipeline. The
+  # returned lots get spawned by `sign_quality_approver` (see
+  # existing approval path); QC just amends the InspectionItem row
+  # itself. Downstream lot / booking reconciliation is a PO-only
+  # concern.
+  def qc_edit_item_decision(
+        %User{} = actor,
+        %Inspection{status: "submitted"} = i,
+        %CustomerReturnLine{} = line,
+        attrs
+      ) do
+    attrs =
+      attrs
+      |> stringify_keys()
+      |> Map.merge(%{
+        "company_id" => i.company_id,
+        "goods_in_inspection_id" => i.id,
+        "customer_return_line_id" => line.id
+      })
+      |> reconcile_qty_from_packs()
+
+    existing =
+      Repo.one(
+        from(it in InspectionItem,
+          where:
+            it.goods_in_inspection_id == ^i.id and
+              it.customer_return_line_id == ^line.id
+        )
+      )
+
+    case existing do
+      nil ->
+        {:error, :not_editable}
+
+      %InspectionItem{} = item ->
+        before_snapshot = item_snapshot(item)
+
+        item
+        |> InspectionItem.changeset(attrs)
+        |> Repo.update()
+        |> case do
+          {:ok, updated} ->
+            Audit.record_updated(
+              actor,
+              "goods_in_inspection_item",
+              updated,
+              before_snapshot,
+              item_snapshot(updated)
+            )
+
+            {:ok, Repo.preload(updated, :customer_return_line)}
 
           {:error, _} = err ->
             err
@@ -918,6 +1035,13 @@ defmodule Backend.GoodsIn do
                i
                |> Inspection.approver_sign_changeset(attrs_to_cast)
                |> Repo.update(),
+             # RMA-backed inspections have no lots yet at QA-sign
+             # time (nothing spawned during operator-sign since
+             # `maybe_auto_receive_po` no-ops on nil PO). Spawn now
+             # if the verdict is `approved`; otherwise skip and let
+             # `fan_out_lot_events` no-op cleanly since there's
+             # nothing to fan out.
+             :ok <- maybe_spawn_return_lots(actor, updated),
              :ok <- fan_out_lot_events(actor, updated) do
           Audit.record_updated(
             actor,
@@ -1025,8 +1149,21 @@ defmodule Backend.GoodsIn do
   end
 
   defp ensure_all_sections_touched(%Inspection{} = i) do
+    # Vehicle + documentation sections are supplier-side (BRCGS §3.5
+    # applies to the seller). RMA-backed inspections skip both:
+    # returns arrive by whatever transport the customer chose (often
+    # unmarked couriers) and there's no CoA / country-of-origin
+    # paperwork to verify on your own product coming back.
+    required_keys =
+      if is_integer(i.customer_return_id) do
+        @section_keys --
+          [:vehicle_inspection, :documentation_verification]
+      else
+        @section_keys
+      end
+
     missing =
-      Enum.filter(@section_keys, fn key ->
+      Enum.filter(required_keys, fn key ->
         case Map.get(i, key) do
           nil -> true
           map when is_map(map) -> map_size(map) == 0
@@ -1040,10 +1177,201 @@ defmodule Backend.GoodsIn do
     end
   end
 
+  # RMA lot-spawn on QA approve. PO-backed inspections spawn lots
+  # during operator sign via `maybe_auto_receive_po`; RMA-backed
+  # ones defer until QA approves so the audit trail says "return
+  # inspected + released" in one atomic step. Skipped for
+  # non-approved verdicts (hold / rejected keep goods off the
+  # shelf entirely; rejected feeds a write-off flow).
+  defp maybe_spawn_return_lots(
+         %User{} = actor,
+         %Inspection{customer_return_id: rma_id, quality_decision: "approved"} = i
+       )
+       when is_integer(rma_id) do
+    i = Repo.preload(i, [
+      :customer_return,
+      items: [customer_return_line: :item]
+    ])
+
+    with {:ok, warehouse} <- resolve_return_warehouse(i.company_id) do
+      # Prefer parking return lots directly in a real quarantine cell
+      # (BRCGS §3.11 non-conforming goods segregation) so the operator
+      # doesn't need to walk them anywhere. Falls back to the
+      # warehouse's Unregistered staging cell only if the tenant hasn't
+      # configured a quarantine cell yet.
+      quarantine_cell = resolve_quarantine_cell(i.company_id, warehouse.id)
+
+      Enum.reduce_while(i.items, :ok, fn item, _acc ->
+        case spawn_lots_for_return_item(actor, i, item, warehouse, quarantine_cell) do
+          :ok -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+    end
+  end
+
+  # First quarantine-purpose cell in the target warehouse. Returns
+  # `nil` (not an error) when there isn't one — the caller falls back
+  # to the warehouse's Unregistered staging cell so a mis-configured
+  # tenant can still receive returns.
+  defp resolve_quarantine_cell(company_id, warehouse_id) do
+    Repo.one(
+      from c in Backend.Warehouses.StorageCell,
+        join: l in Backend.Warehouses.StorageLocation,
+        on: l.id == c.storage_location_id,
+        join: f in Backend.Warehouses.Floor,
+        on: f.id == l.floor_id,
+        where:
+          c.company_id == ^company_id and
+            f.warehouse_id == ^warehouse_id and
+            c.purpose == "quarantine",
+        order_by: [asc: c.id],
+        limit: 1
+    )
+  end
+
+  defp maybe_spawn_return_lots(_actor, _inspection), do: :ok
+
+  defp spawn_lots_for_return_item(
+         %User{} = actor,
+         %Inspection{} = i,
+         %InspectionItem{material_decision: decision} = item,
+         warehouse,
+         quarantine_cell
+       )
+       when decision in ["hold", "reject"] do
+    # Per-line hold/reject: no lot spawn for this line either. The
+    # inspection-level QA verdict is `approved` but this specific
+    # line failed — leave it as a paperwork record.
+    _ = {actor, i, item, warehouse, quarantine_cell}
+    :ok
+  end
+
+  defp spawn_lots_for_return_item(
+         %User{} = actor,
+         %Inspection{customer_return: rma} = i,
+         %InspectionItem{customer_return_line: line, packs: packs} = item,
+         warehouse,
+         quarantine_cell
+       )
+       when is_list(packs) do
+    Enum.reduce_while(packs, :ok, fn pack, _acc ->
+      qty = pack["qty"] || pack[:qty]
+      length_mm = pack["package_length_mm"] || pack[:package_length_mm] || 1
+      width_mm = pack["package_width_mm"] || pack[:package_width_mm] || 1
+      height_mm = pack["package_height_mm"] || pack[:package_height_mm] || 1
+      weight_kg = pack["package_weight_kg"] || pack[:package_weight_kg] || "0.01"
+
+      units_per_pkg =
+        pack["units_per_package"] || pack[:units_per_package] || qty || 1
+
+      # Auto-park in a real quarantine cell when one exists; otherwise
+      # fall back to warehouse-scoped Unregistered so a tenant that
+      # hasn't provisioned quarantine cells can still receive returns.
+      placement_attrs =
+        if quarantine_cell do
+          %{"destination_cell_id" => quarantine_cell.id}
+        else
+          %{"warehouse_id" => warehouse.id}
+        end
+
+      attrs =
+        Map.merge(placement_attrs, %{
+          "item_id" => line && line.item_id,
+          "unit_of_measurement_id" =>
+            line && line.item && (line.item.stock_uom_id || nil),
+          "unit_cost" => line && line.unit_price,
+          "package_length_mm" => length_mm,
+          "package_width_mm" => width_mm,
+          "package_height_mm" => height_mm,
+          "package_weight_kg" => weight_kg,
+          "units_per_package" => units_per_pkg,
+          "stack_factor" => 1,
+          "source_ref" => rma_source_ref(rma),
+          "qty_received" => to_string(qty),
+          "notes" =>
+            "Return via RMA " <>
+              rma_source_ref(rma) <>
+              " · pack " <>
+              String.slice(item.uuid, 0, 8),
+          # Internal hand-offs — see Backend.Stock.receive_lot/3.
+          "__service_source_kind__" => "return",
+          "__customer_return_id__" => i.customer_return_id,
+          "__goods_in_inspection_id__" => i.id
+        })
+
+      case Backend.Stock.receive_lot(actor, i.company_id, attrs) do
+        {:ok, lot} ->
+          # Flip quarantine → available so the lot shows up in
+          # `/m/putaway` (same case-1 branch as goods-in unregistered
+          # arrivals: `c.system_kind == "unregistered"`).
+          _ =
+            Backend.Stock.record_lot_event(
+              actor,
+              i.company_id,
+              lot.uuid,
+              %{
+                "kind" => "qc_passed",
+                "reason" =>
+                  "Return inspection " <>
+                    (i.uuid || "") <>
+                    " approved" <>
+                    if(i.quality_decision_reason, do: " · " <> i.quality_decision_reason, else: "")
+              }
+            )
+
+          {:cont, :ok}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp spawn_lots_for_return_item(_actor, _i, _item, _warehouse, _quarantine_cell), do: :ok
+
+  defp resolve_return_warehouse(company_id) do
+    case Repo.one(
+           from w in Backend.Warehouses.Warehouse,
+             where: w.company_id == ^company_id and w.kind == "warehouse",
+             order_by: [asc: w.id],
+             limit: 1
+         ) do
+      %Backend.Warehouses.Warehouse{} = w -> {:ok, w}
+      nil -> {:error, :no_warehouse}
+    end
+  end
+
+  defp rma_source_ref(%Backend.CustomerReturns.CustomerReturn{
+         id: id,
+         uuid: uuid,
+         company_id: company_id
+       }) do
+    case Repo.get(Backend.Companies.Company, company_id) do
+      %Backend.Companies.Company{} = company ->
+        case Backend.Numbering.render(id, company, "customer_return") do
+          code when is_binary(code) and code != "" -> code
+          _ -> uuid
+        end
+
+      _ ->
+        uuid
+    end
+  end
+
+  defp rma_source_ref(_), do: ""
+
   # Walk every lot the receive call stamped with this inspection's id
   # and emit the per-lot lifecycle event matching the inspection-level
   # decision + per-line decision. Inside the parent transaction.
   defp fan_out_lot_events(_actor, %Inspection{quality_decision: "hold"}), do: :ok
+
+  # RMA-backed inspections already fire their own lot events inside
+  # `maybe_spawn_return_lots` (each fresh lot gets qc_passed on the
+  # spot). Skip the goods-in fan-out to avoid a double-emit that would
+  # trip the state machine.
+  defp fan_out_lot_events(_actor, %Inspection{customer_return_id: id}) when is_integer(id),
+    do: :ok
 
   defp fan_out_lot_events(actor, %Inspection{} = i) do
     items =
@@ -1146,7 +1474,12 @@ defmodule Backend.GoodsIn do
         :quality_approver,
         :created_by,
         :updated_by,
-        items: [:purchase_order_line],
+        customer_return: [
+          :customer,
+          :customer_invoice,
+          lines: [item: :stock_uom]
+        ],
+        items: [:purchase_order_line, :customer_return_line],
         files: [:uploaded_by]
       ],
       force: true

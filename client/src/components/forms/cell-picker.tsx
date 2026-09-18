@@ -25,6 +25,9 @@ interface CellPickerProps {
    *  this item's storage_tags (combined with `matchTags`). */
   itemId?: number | null;
   matchTags?: boolean;
+  /** When set, server restricts results to cells whose ``purpose``
+   *  matches (e.g. ``"quarantine"`` for the RMA-receive flow). */
+  purpose?: string | null;
   disabled?: boolean;
   placeholder?: string;
   onChange: (id: string, row: StockCellPickerRow | null) => void;
@@ -52,6 +55,7 @@ export function CellPicker({
   warehouseId,
   itemId,
   matchTags = true,
+  purpose = null,
   disabled,
   placeholder = "Pick a cell…",
   onChange,
@@ -89,8 +93,9 @@ export function CellPicker({
         w: warehouseId ?? null,
         i: itemId ?? null,
         m: matchTags,
+        p: purpose ?? null,
       }),
-    [debounced, warehouseId, itemId, matchTags],
+    [debounced, warehouseId, itemId, matchTags, purpose],
   );
 
   const abortRef = useRef<AbortController | null>(null);
@@ -107,6 +112,7 @@ export function CellPicker({
     qs.set("limit", "50");
     if (debounced.trim()) qs.set("search", debounced.trim());
     if (warehouseId) qs.set("warehouse_id", String(warehouseId));
+    if (purpose) qs.set("purpose", purpose);
     if (itemId) {
       qs.set("item_id", String(itemId));
       qs.set("match_tags", matchTags ? "true" : "false");

@@ -129,6 +129,17 @@ defmodule Backend.Stock.Lot do
     # manual receive / opening balance / MO output.
     belongs_to :purchase_order_line, Backend.Purchasing.PurchaseOrderLine
 
+    # Return lineage — set only when this lot was born from a
+    # customer return. ``parent_lot`` points at the lot the customer
+    # originally received (recall query traceback); ``customer_return``
+    # points at the RMA event that brought it back (paperwork
+    # cross-link). A returned batch is a NEW lot (not a refill of the
+    # original) per BRCGS §3.11 — see ``Backend.CustomerReturns`` for
+    # the receive-side spawn logic. Nullable on every other kind of
+    # lot.
+    belongs_to :parent_lot, __MODULE__, foreign_key: :parent_lot_id
+    belongs_to :customer_return, Backend.CustomerReturns.CustomerReturn
+
     has_many :placements, Placement, foreign_key: :stock_lot_id
     has_many :movements, Movement, foreign_key: :stock_lot_id
     has_many :events, LotEvent, foreign_key: :stock_lot_id
@@ -148,6 +159,11 @@ defmodule Backend.Stock.Lot do
     has_many :return_picks,
              Backend.Warehouses.ReturnPick,
              foreign_key: :stock_lot_id
+
+    # Every customer return that referenced this lot as its parent.
+    # Powers the "Return history" panel on a parent lot's detail
+    # page + the recall query "where did every unit of L00X end up".
+    has_many :return_lots, __MODULE__, foreign_key: :parent_lot_id
 
     timestamps(type: :utc_datetime)
   end
@@ -305,7 +321,9 @@ defmodule Backend.Stock.Lot do
       :created_by_id,
       :updated_by_id,
       :goods_in_inspection_id,
-      :purchase_order_line_id
+      :purchase_order_line_id,
+      :parent_lot_id,
+      :customer_return_id
     ])
     |> validate_required([
       :company_id,

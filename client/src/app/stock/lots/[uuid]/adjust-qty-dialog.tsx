@@ -59,9 +59,20 @@ export function AdjustQtyDialog({ lot, open, onOpenChange }: Props) {
     debug?: ErrorDebug;
   } | null>(null);
 
-  const nonZeroPlacements = useMemo(
-    () => lot.placements.filter((p) => Number(p.qty) > 0),
+  // Direction-aware placement picker source. Adjust-DOWN can only
+  // pull from cells that actually hold stock (Decimal.compare "> 0").
+  // Adjust-UP is fine against a zero-qty placement — the operator's
+  // adding stock, so an empty row is a legitimate target. Both lists
+  // exclude legacy phantom placements with a broken storage_cell FK
+  // so the dropdown never renders a "Cell null" row.
+  const allPlacements = useMemo(
+    () => lot.placements.filter((p) => !!p.storage_cell_id),
     [lot.placements],
+  );
+
+  const nonZeroPlacements = useMemo(
+    () => allPlacements.filter((p) => Number(p.qty) > 0),
+    [allPlacements],
   );
 
   const [direction, setDirection] = useState<"up" | "down">("up");
@@ -69,8 +80,10 @@ export function AdjustQtyDialog({ lot, open, onOpenChange }: Props) {
   const [reason, setReason] = useState<string>("");
   const [reasonCategory, setReasonCategory] =
     useState<StockMovementReasonCategory | "">("");
+
+  const eligiblePlacements = direction === "up" ? allPlacements : nonZeroPlacements;
   const [placementId, setPlacementId] = useState<string>(
-    nonZeroPlacements[0]?.uuid ?? "",
+    eligiblePlacements[0]?.uuid ?? "",
   );
 
   // Reset every time the dialog opens so a previous-attempt state
@@ -82,13 +95,31 @@ export function AdjustQtyDialog({ lot, open, onOpenChange }: Props) {
     setReason("");
     setReasonCategory("");
     setError(null);
-    setPlacementId(nonZeroPlacements[0]?.uuid ?? "");
-  }, [open, nonZeroPlacements]);
+    // Prefer a non-zero placement on first render so the "current qty"
+    // preview isn't empty; falls through to any placement for up-only
+    // lots (nothing on hand yet).
+    setPlacementId(
+      nonZeroPlacements[0]?.uuid ?? allPlacements[0]?.uuid ?? "",
+    );
+  }, [open, nonZeroPlacements, allPlacements]);
+
+  // Re-seed the picker if the operator flips direction and the current
+  // selection is no longer eligible (e.g. picked a zero-qty placement
+  // then flipped to Adjust down).
+  useEffect(() => {
+    if (!placementId) return;
+    if (!eligiblePlacements.find((p) => p.uuid === placementId)) {
+      setPlacementId(eligiblePlacements[0]?.uuid ?? "");
+    }
+  }, [direction, eligiblePlacements, placementId]);
 
   const placement = useMemo(
-    () => nonZeroPlacements.find((p) => p.uuid === placementId) ?? null,
-    [nonZeroPlacements, placementId],
+    () => eligiblePlacements.find((p) => p.uuid === placementId) ?? null,
+    [eligiblePlacements, placementId],
   );
+
+  const hasNoPlacements = allPlacements.length === 0;
+  const hasNoNonZero = nonZeroPlacements.length === 0;
 
   const magnitudeNumber = Number(magnitude);
   const isValidMagnitude =
@@ -152,7 +183,37 @@ export function AdjustQtyDialog({ lot, open, onOpenChange }: Props) {
         </DialogHeader>
 
         <div className="space-y-3">
-          {nonZeroPlacements.length > 1 && (
+          {hasNoPlacements && (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+              <p className="font-medium">
+                No placements on this lot yet.
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                Adjust needs a cell to add to. Use{" "}
+                <a
+                  href="/m"
+                  className="font-medium text-amber-700 underline underline-offset-2 dark:text-amber-400"
+                >
+                  Receive / put-away
+                </a>{" "}
+                to place stock first, then come back here for corrections.
+              </p>
+            </div>
+          )}
+
+          {!hasNoPlacements &&
+            direction === "down" &&
+            hasNoNonZero && (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+                <p>
+                  All placements are already at zero — nothing to
+                  adjust down. Flip to <strong>Adjust up</strong> to
+                  add stock instead.
+                </p>
+              </div>
+            )}
+
+          {eligiblePlacements.length > 1 && (
             <div className="space-y-1.5">
               <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">
                 Placement
@@ -162,7 +223,7 @@ export function AdjustQtyDialog({ lot, open, onOpenChange }: Props) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {nonZeroPlacements.map((p) => (
+                  {eligiblePlacements.map((p) => (
                     <SelectItem key={p.uuid} value={p.uuid}>
                       {breadcrumb(p)} — {p.qty} {symbol}
                     </SelectItem>

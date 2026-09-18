@@ -448,9 +448,21 @@ defmodule Backend.Stock.WriteOffs do
       |> Enum.map(&Map.get(wo, &1))
       |> Enum.filter(&is_integer/1)
 
-    if id in forbidden_ids,
-      do: {:error, :actor_conflict},
-      else: :ok
+    cond do
+      id not in forbidden_ids ->
+        :ok
+
+      # Dev bypass — same escape hatch as `Backend.GoodsIn` / MO
+      # approval flows use. `config :backend, :enforce_four_eyes,
+      # false` in dev.exs lets one seat drive create + approve +
+      # authorise. Prod defaults to `true` (BRCGS §5.9 three-eyes on
+      # write-offs stays real).
+      not Backend.FourEyes.enforce?() ->
+        :ok
+
+      true ->
+        {:error, :actor_conflict}
+    end
   end
 
   # Placement resolution: if the draft named one, use it. Otherwise

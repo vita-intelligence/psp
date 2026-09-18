@@ -1,12 +1,17 @@
 "use client";
 
 /**
- * New-RMA form. Two paths:
+ * New-RMA form. Three paths:
  *   1. Pick a customer + a sent / partially-paid / paid invoice ⇒ RMA
  *      pre-linked to the invoice. Lines snap their unit_price from the
  *      invoice when added on the next screen.
  *   2. Pick a customer alone ⇒ standalone RMA (e.g. goodwill return
  *      with no source invoice yet). Lines need a manual unit_price.
+ *   3. Internal / trial-batch return ⇒ no customer, no invoice. Used
+ *      for R&D samples coming back, trial-batch quarantine
+ *      re-inspection of our own product, etc. Same GII + lot spawn
+ *      flow — the accept step just skips the credit-note issuance
+ *      (nothing to credit).
  */
 
 import { useEffect, useRef, useState, useTransition } from "react";
@@ -75,6 +80,11 @@ async function fetchInvoicesForCustomer(
 
 export function NewReturnForm({ customers }: Props) {
   const router = useRouter();
+  // `isInternal` = trial batch / R&D / in-house re-quarantine. When
+  // true, customer + invoice pickers hide entirely and both go up
+  // as null. Auto-flips off the moment a customer is picked so the
+  // two paths can't drift out of sync.
+  const [isInternal, setIsInternal] = useState(false);
   const [customerId, setCustomerId] = useState<number | null>(null);
   const [invoiceId, setInvoiceId] = useState<number | null>(null);
   const [availableInvoices, setAvailableInvoices] = useState<InvoiceSummary[]>(
@@ -120,14 +130,16 @@ export function NewReturnForm({ customers }: Props) {
     setErrors({});
     setActionError(null);
 
-    if (!customerId) {
-      setErrors({ customer_id: ["Pick a customer."] });
+    if (!isInternal && !customerId) {
+      setErrors({
+        customer_id: ["Pick a customer — or switch on 'Internal / trial-batch' above."],
+      });
       return;
     }
 
     const input = {
-      customer_id: customerId,
-      customer_invoice_id: invoiceId,
+      customer_id: isInternal ? null : customerId,
+      customer_invoice_id: isInternal ? null : invoiceId,
       return_date: returnDate,
       reason_summary: reasonSummary.trim() || null,
       notes: notes.trim() || null,
@@ -152,32 +164,59 @@ export function NewReturnForm({ customers }: Props) {
       </CardHeader>
       <CardContent>
         <form onSubmit={onSubmit} noValidate className="space-y-4">
-          <FormRow label="Customer *">
-            <Select
-              value={customerId !== null ? String(customerId) : "none"}
-              onValueChange={onCustomerChange}
-            >
-              <SelectTrigger className="h-11">
-                <SelectValue placeholder="Pick a customer…" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">— Pick —</SelectItem>
-                {eligibleCustomers.map((c) => (
-                  <SelectItem key={c.id} value={String(c.id)}>
-                    {c.name} · {c.currency_code}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {eligibleCustomers.length === 0 && (
-              <p className="text-xs text-amber-700 dark:text-amber-400">
-                No customers yet — create one first.
-              </p>
-            )}
-            <FieldError messages={errors.customer_id} />
+          <FormRow label="Return type">
+            <label className="flex items-start gap-2 rounded-md border border-border/60 bg-muted/20 p-2.5 text-xs">
+              <input
+                type="checkbox"
+                checked={isInternal}
+                onChange={(e) => {
+                  setIsInternal(e.target.checked);
+                  if (e.target.checked) {
+                    setCustomerId(null);
+                    setInvoiceId(null);
+                  }
+                }}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="font-medium">Internal / trial-batch return</span>
+                <span className="mt-0.5 block text-muted-foreground">
+                  No customer or invoice — for R&amp;D samples coming
+                  back, trial batches, or in-house quarantine
+                  re-inspection of our own product.
+                </span>
+              </span>
+            </label>
           </FormRow>
 
-          {customerId !== null && (
+          {!isInternal && (
+            <FormRow label="Customer *">
+              <Select
+                value={customerId !== null ? String(customerId) : "none"}
+                onValueChange={onCustomerChange}
+              >
+                <SelectTrigger className="h-11">
+                  <SelectValue placeholder="Pick a customer…" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">— Pick —</SelectItem>
+                  {eligibleCustomers.map((c) => (
+                    <SelectItem key={c.id} value={String(c.id)}>
+                      {c.name} · {c.currency_code}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {eligibleCustomers.length === 0 && (
+                <p className="text-xs text-amber-700 dark:text-amber-400">
+                  No customers yet — create one first.
+                </p>
+              )}
+              <FieldError messages={errors.customer_id} />
+            </FormRow>
+          )}
+
+          {!isInternal && customerId !== null && (
             <FormRow label="Source invoice">
               <Select
                 value={invoiceId !== null ? String(invoiceId) : "none"}
@@ -252,7 +291,10 @@ export function NewReturnForm({ customers }: Props) {
           )}
 
           <div className="flex justify-end gap-2 pt-2">
-            <Button type="submit" disabled={pending || !customerId}>
+            <Button
+              type="submit"
+              disabled={pending || (!isInternal && !customerId)}
+            >
               {pending && <Loader2 className="mr-2 size-4 animate-spin" />}
               Create draft RMA
             </Button>

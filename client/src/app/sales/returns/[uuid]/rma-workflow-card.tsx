@@ -113,8 +113,12 @@ export function RMAWorkflowCard({
   const Icon = STATUS_ICON[rma.status];
 
   const showReceive = canReceive && rma.status === "draft" && rma.lines.length > 0;
-  const showAccept = canResolve && rma.status === "received";
-  const showReject = canResolve && rma.status === "received";
+  // Accept + Reject are mobile-only actions — quality signs the
+  // Goods-In Inspection on the tablet (/m/inspections/[uuid]). The
+  // resulting QA verdict drives the RMA's terminal state; the desk
+  // never needs its own dialog for either.
+  const showAccept = false;
+  const showReject = false;
   const showCancel =
     canEdit && (rma.status === "draft" || rma.status === "received");
 
@@ -142,9 +146,11 @@ export function RMAWorkflowCard({
               </Badge>
             </CardTitle>
             <CardDescription>
-              Mark received once goods are physically back. Then quality
-              inspects per-line — accept (auto-issues a credit note) or
-              reject with reason.
+              Mark received once goods are physically back. Quality then
+              inspects on the mobile tablet (<code>/m/inspections</code>)
+              — approval spawns the child stock lots + issues the
+              credit note; hold or reject drops the RMA into the
+              matching terminal state.
             </CardDescription>
           </div>
         </div>
@@ -414,47 +420,62 @@ function useActionRunner(onClose: () => void) {
 function ReceiveDialog({ open, onClose, rma }: DialogProps) {
   const { pending, error, run } = useActionRunner(onClose);
 
+  // Confirmation-only dialog. Physical measurement (per-box qty +
+  // dimensions + cell) happens in the mobile Return Inspection wizard
+  // — same shape as the goods-in flow. Mark-received just flips the
+  // RMA status and auto-creates a draft inspection for the operator
+  // to pick up on the tablet.
+  function submit() {
+    run(
+      () => markRMAReceivedAction(rma.uuid, {}),
+      "RMA marked received — inspection queued on mobile",
+    );
+  }
+
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Mark RMA received</DialogTitle>
           <DialogDescription>
-            Confirms goods are physically back in our warehouse. Locks
-            header + line edits and unlocks the inspection workflow for
-            quality.
+            Confirms the physical delivery landed. A draft{" "}
+            <strong>Goods-In Inspection</strong> is auto-created — the
+            operator opens it from <code>/m/inspections</code> on the
+            tablet and enters per-box qty + dimensions the same way as
+            a supplier delivery. Once QA approves, the child lots
+            appear in <code>/m/putaway</code>.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3">
-          <div className="rounded-md border border-border/60 bg-muted/30 p-3 text-[11px]">
-            <p className="font-medium">After receive:</p>
-            <ul className="mt-1 space-y-0.5 text-muted-foreground">
-              <li>• Header + line edits locked</li>
-              <li>• Quality can set qty_accepted per line</li>
-              <li>• Accept / Reject buttons unlock</li>
-            </ul>
-          </div>
-          {error && (
-            <ErrorBanner
-              detail={error.detail}
-              code={error.code}
-              debug={error.debug}
-            />
-          )}
-        </div>
+        <ul className="space-y-1.5">
+          {rma.lines.map((line) => (
+            <li
+              key={line.uuid}
+              className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-card px-3 py-2 text-xs"
+            >
+              <span className="min-w-0 flex-1 truncate font-medium">
+                {line.item?.name ?? "Unknown item"}
+              </span>
+              <span className="font-mono text-[11px] text-muted-foreground">
+                qty {line.qty_returned}
+              </span>
+            </li>
+          ))}
+        </ul>
+
+        {error && (
+          <ErrorBanner
+            detail={error.detail}
+            code={error.code}
+            debug={error.debug}
+          />
+        )}
 
         <DialogFooter className="gap-2">
           <Button type="button" variant="ghost" onClick={onClose} disabled={pending}>
             Back
           </Button>
-          <Button
-            type="button"
-            onClick={() =>
-              run(() => markRMAReceivedAction(rma.uuid), "RMA marked received")
-            }
-            disabled={pending}
-          >
+          <Button type="button" onClick={submit} disabled={pending}>
             {pending && <Loader2 className="mr-2 size-4 animate-spin" />}
             <PackageOpen className="mr-1.5 size-4" />
             Mark received

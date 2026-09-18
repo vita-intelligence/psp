@@ -2782,7 +2782,8 @@ export interface CustomerReturn {
     approval_status: CustomerApprovalStatus;
     effective_approval_status: CustomerApprovalStatus;
   } | null;
-  customer_id: number;
+  // Nullable — internal / trial-batch returns have no customer.
+  customer_id: number | null;
   customer_invoice: {
     id: number;
     uuid: string;

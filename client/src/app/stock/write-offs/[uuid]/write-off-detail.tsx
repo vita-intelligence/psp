@@ -49,6 +49,7 @@ import {
   revertWriteOffAction,
   submitWriteOffAction,
 } from "@/lib/stock/actions";
+import { ENFORCE_FOUR_EYES } from "@/lib/four-eyes";
 
 interface Props {
   writeOff: StockWriteOff;
@@ -390,16 +391,24 @@ function ActionBar({
 }) {
   const showSubmit = status === "draft" && isCreator;
   const showDelete = status === "draft" && isCreator;
-  const showApprove = status === "pending_approval" && canApprove && !isCreator;
+  // Three-eyes gates only bite when the backend is enforcing them
+  // (`Backend.FourEyes.enforce?/0`). Dev mirrors the backend flag
+  // via `NEXT_PUBLIC_ENFORCE_FOUR_EYES=false` in `.env.local` so a
+  // single seat can walk create → approve → authorise → revert
+  // end-to-end. Prod keeps the pre-emptive UI disable so a real QA
+  // user doesn't hit the button just to see the server 422 them.
+  const showApprove =
+    status === "pending_approval" &&
+    canApprove &&
+    (!isCreator || !ENFORCE_FOUR_EYES);
   const showAuthorise =
     status === "pending_authorisation" &&
     canAuthorise &&
-    !isCreator &&
-    !isPreviousApprover;
+    (!ENFORCE_FOUR_EYES || (!isCreator && !isPreviousApprover));
   const showReject =
     (status === "pending_approval" || status === "pending_authorisation") &&
     (canApprove || canAuthorise) &&
-    !isCreator;
+    (!isCreator || !ENFORCE_FOUR_EYES);
   const showRevert = status === "active" && canRevert;
 
   if (

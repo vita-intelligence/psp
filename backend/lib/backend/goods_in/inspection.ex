@@ -24,6 +24,7 @@ defmodule Backend.GoodsIn.Inspection do
 
   alias Backend.Accounts.User
   alias Backend.Companies.Company
+  alias Backend.CustomerReturns.CustomerReturn
   alias Backend.GoodsIn.{InspectionFile, InspectionItem}
   alias Backend.Purchasing.PurchaseOrder
 
@@ -62,6 +63,11 @@ defmodule Backend.GoodsIn.Inspection do
 
     belongs_to :company, Company
     belongs_to :purchase_order, PurchaseOrder
+    # RMA source (mutually exclusive with purchase_order per DB CHECK
+    # `goods_in_inspections_source_xor`). Nullable when the inspection
+    # is against a supplier PO; set when the inspection is against a
+    # customer return (RMA).
+    belongs_to :customer_return, CustomerReturn
     belongs_to :goods_in_operator, User
     belongs_to :quality_approver, User
     belongs_to :created_by, User
@@ -87,6 +93,7 @@ defmodule Backend.GoodsIn.Inspection do
     |> cast(attrs, [
       :company_id,
       :purchase_order_id,
+      :customer_return_id,
       :delivery_date,
       :delivery_time,
       :transport_company,
@@ -103,12 +110,34 @@ defmodule Backend.GoodsIn.Inspection do
     |> put_change(:status, "draft")
     |> validate_required([
       :company_id,
-      :purchase_order_id,
       :delivery_date
     ])
+    |> validate_exactly_one_source()
     |> validate_length(:transport_company, max: 160)
     |> validate_length(:vehicle_registration, max: 40)
     |> validate_length(:seal_number, max: 80)
+  end
+
+  # Mirror the DB CHECK constraint at the app layer so the API returns
+  # a proper validation error (not a raw Postgres exception).
+  defp validate_exactly_one_source(changeset) do
+    po = get_field(changeset, :purchase_order_id)
+    rma = get_field(changeset, :customer_return_id)
+
+    cond do
+      is_nil(po) and is_nil(rma) ->
+        add_error(changeset, :purchase_order_id,
+          "either purchase_order_id or customer_return_id is required"
+        )
+
+      not is_nil(po) and not is_nil(rma) ->
+        add_error(changeset, :customer_return_id,
+          "cannot set both purchase_order_id and customer_return_id"
+        )
+
+      true ->
+        changeset
+    end
   end
 
   @doc """

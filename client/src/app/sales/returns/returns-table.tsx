@@ -159,7 +159,9 @@ export function ReturnsTable({ initialPage }: Props) {
               href={`/sales/returns/${rma.uuid}`}
               className="block truncate text-sm font-medium hover:underline"
             >
-              {rma.customer?.name ?? "—"}
+              {rma.customer?.name ?? (
+                <span className="italic text-muted-foreground">Internal</span>
+              )}
             </Link>
             {rma.customer_invoice && (
               <p className="truncate text-[11px] text-muted-foreground">
@@ -371,7 +373,9 @@ export function ReturnsTable({ initialPage }: Props) {
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-semibold">
-                {rma.customer?.name ?? "—"}
+                {rma.customer?.name ?? (
+                <span className="italic text-muted-foreground">Internal</span>
+              )}
               </p>
               <p className="truncate text-[11px] text-muted-foreground">
                 {rma.code ?? `#${rma.id}`} ·{" "}

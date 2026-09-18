@@ -33,7 +33,7 @@ export default async function NewInvoicePage() {
       <SalesSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-3xl space-y-6">
+        <div className="mx-auto w-full space-y-6">
           <div>
             <Button asChild variant="ghost" size="sm" className="text-muted-foreground">
               <Link href="/sales/invoices">

@@ -20,10 +20,10 @@ import { useFormatPrefs } from "@/lib/format/company-prefs-context";
 import type { InspectionStatus } from "@/lib/goods-in/types";
 import type { InspectionSummary } from "@/lib/inspections/types";
 
-type Tab = "needs_sign_off" | "mine" | "recent";
+type Tab = "to_do" | "mine" | "recent";
 
 interface InitialPages {
-  needs_sign_off: InspectionSummary[];
+  to_do: InspectionSummary[];
   mine: InspectionSummary[];
   recent: InspectionSummary[];
 }
@@ -39,18 +39,23 @@ const POLL_INTERVAL_MS = 30_000;
  * Mobile inspections list.
  *
  * Three tabs:
- *   - Needs sign-off (approver-only) → `?status=submitted`
- *   - Mine                          → `?mine=true`
- *   - All recent                    → no filter
+ *   - To do   → `?status=open` (draft + submitted — everything that
+ *               needs someone's attention). Default for everyone.
+ *   - Mine    → `?mine=true` (things you started or signed).
+ *   - All     → no filter.
  *
- * Default tab: "Needs sign-off" if the viewer can approve, else
- * "Mine". Tap a row → /m/inspections/<uuid> (wizard or its
- * read-only summary depending on status).
+ * Tap a row → /m/inspections/<uuid> (wizard or its read-only summary
+ * depending on status).
  */
 export function MobileInspectionsList({ canApprove, initialPages }: Props) {
   const router = useRouter();
   const prefs = useFormatPrefs();
-  const [tab, setTab] = useState<Tab>(canApprove ? "needs_sign_off" : "mine");
+  const [tab, setTab] = useState<Tab>("to_do");
+  // `canApprove` decides some copy but no longer gates the default
+  // tab — everyone lands on the "To do" queue (draft + submitted)
+  // because a fresh draft is worthless if it's hidden behind a tab
+  // the user has to discover.
+  void canApprove;
   const [pages, setPages] = useState<InitialPages>(initialPages);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
@@ -61,7 +66,7 @@ export function MobileInspectionsList({ canApprove, initialPages }: Props) {
       if (!silent) setIsRefreshing(true);
       try {
         const params = new URLSearchParams({ limit: "25" });
-        if (which === "needs_sign_off") params.set("status", "submitted");
+        if (which === "to_do") params.set("status", "open");
         if (which === "mine") params.set("mine", "true");
         const res = await fetch(
           `/api/procurement/inspections?${params.toString()}`,
@@ -158,14 +163,12 @@ export function MobileInspectionsList({ canApprove, initialPages }: Props) {
         </div>
 
         <div className="mt-2 -mx-1 flex gap-1 overflow-x-auto pb-1">
-          {canApprove && (
-            <FilterChip
-              label="Needs sign-off"
-              count={pages.needs_sign_off.length}
-              active={tab === "needs_sign_off"}
-              onClick={() => setTab("needs_sign_off")}
-            />
-          )}
+          <FilterChip
+            label="To do"
+            count={pages.to_do.length}
+            active={tab === "to_do"}
+            onClick={() => setTab("to_do")}
+          />
           <FilterChip
             label="Mine"
             count={pages.mine.length}
@@ -173,7 +176,7 @@ export function MobileInspectionsList({ canApprove, initialPages }: Props) {
             onClick={() => setTab("mine")}
           />
           <FilterChip
-            label="All recent"
+            label="All"
             count={pages.recent.length}
             active={tab === "recent"}
             onClick={() => setTab("recent")}
@@ -275,9 +278,19 @@ function InspectionRow({
               <Icon className="size-2.5" />
               {STATUS_LABEL[row.status]}
             </span>
-            {row.purchase_order?.code && (
+            {(row.purchase_order?.code || row.customer_return?.code) && (
               <span className="font-mono text-[10px] text-muted-foreground">
-                {row.purchase_order.code}
+                {row.purchase_order?.code ?? row.customer_return?.code}
+              </span>
+            )}
+            {row.customer_return && (
+              <span className="inline-flex items-center rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                Return
+              </span>
+            )}
+            {row.status === "draft" && !row.goods_in_operator && (
+              <span className="inline-flex items-center rounded-full bg-emerald-500 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-white">
+                New
               </span>
             )}
           </div>
@@ -287,7 +300,9 @@ function InspectionRow({
               {row.code ?? `#${row.id}`}
             </span>
             <span className="truncate text-sm font-medium">
-              {row.purchase_order?.vendor?.name ?? "Unknown vendor"}
+              {row.purchase_order?.vendor?.name ??
+                row.customer_return?.customer?.name ??
+                (row.customer_return ? "Internal return" : "Unknown vendor")}
             </span>
           </div>
 
@@ -348,9 +363,9 @@ const STATUS_ICON: Record<InspectionStatus, typeof Clock> = {
 };
 
 const EMPTY_COPY: Record<Tab, { title: string; body: string }> = {
-  needs_sign_off: {
-    title: "Nothing waiting for sign-off",
-    body: "Submitted inspections will appear here. Pull down to refresh.",
+  to_do: {
+    title: "Nothing to do",
+    body: "Drafts an operator needs to fill and submitted inspections waiting for QA show up here.",
   },
   mine: {
     title: "You haven't touched any inspections yet",

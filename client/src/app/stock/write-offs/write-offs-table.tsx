@@ -321,7 +321,11 @@ export function WriteOffsTable({ initialPage, canCreate }: WriteOffsTableProps) 
         ),
       },
       {
-        id: "created_by",
+        // `filed_by` (not `created_by`) so this doesn't collide with
+        // the shared `auditColumns()` helper's `created_by` column
+        // mixed in at the bottom — both would key on the same id and
+        // trip React's duplicate-key warning inside the DataTable.
+        id: "filed_by",
         header: "Filed by",
         widthClassName: "w-40",
         group: "Signatures",

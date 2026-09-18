@@ -52,7 +52,7 @@ export default async function NewPOPage({
       <ProcurementSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-10">
-        <div className="mx-auto max-w-6xl space-y-6">
+        <div className="mx-auto w-full space-y-6">
           <div>
             <Button
               asChild

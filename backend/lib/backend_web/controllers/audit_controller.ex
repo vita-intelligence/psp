@@ -56,6 +56,12 @@ defmodule BackendWeb.AuditController do
     "stock_lot" => "stock.view",
     "stock_lot_placement" => "stock.view",
     "stock_movement" => "stock.view",
+    # Write-off audit rides the same read floor as the write-off
+    # ledger itself (see `StockWriteOffController` — index/show gated
+    # by `stock.view`); actioning the write-off needs the dedicated
+    # `stock.writeoff.*` perms but reading who signed what is
+    # available to anyone with stock read.
+    "stock_write_off" => "stock.view",
     # Vendor domain — the approved-supplier registry + per-item +
     # certificate edges all ride the same view perm.
     "vendor" => "vendors.view",
@@ -354,6 +360,13 @@ defmodule BackendWeb.AuditController do
   defp check_entity_in_company(actor, "stock_movement", entity_id) do
     case Backend.Repo.get(Backend.Stock.Movement, entity_id) do
       %{stock_lot_id: lot_id} -> check_parent_stock_lot(actor, lot_id)
+      _ -> {:error, :cross_company}
+    end
+  end
+
+  defp check_entity_in_company(actor, "stock_write_off", entity_id) do
+    case Backend.Repo.get(Backend.Stock.WriteOff, entity_id) do
+      %{company_id: company_id} when company_id == actor.company_id -> :ok
       _ -> {:error, :cross_company}
     end
   end

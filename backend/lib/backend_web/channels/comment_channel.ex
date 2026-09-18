@@ -155,6 +155,14 @@ defmodule BackendWeb.CommentChannel do
   defp check_view_perm(user, "stock_lot"),
     do: gate(user, "stock.view")
 
+  # Write-off chat rides the same read floor as the write-off ledger
+  # itself (see `StockWriteOffController.index/show` — both gated by
+  # `stock.view`). Actioning the write-off needs the dedicated
+  # `stock.writeoff.*` perms; posting into the chat borrows those via
+  # `Backend.Comments.@write_perms`.
+  defp check_view_perm(user, "stock_write_off"),
+    do: gate(user, "stock.view")
+
   defp check_view_perm(user, "bom"),
     do: gate(user, "production.bom_view")
 
@@ -246,6 +254,13 @@ defmodule BackendWeb.CommentChannel do
 
   defp resolve_entity_id(user, "stock_lot", uuid) do
     case Stock.get_for_company(user.company_id, uuid) do
+      %{id: id} -> {:ok, id}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp resolve_entity_id(user, "stock_write_off", uuid) do
+    case Backend.Stock.WriteOffs.get(user.company_id, uuid) do
       %{id: id} -> {:ok, id}
       _ -> {:error, :not_found}
     end

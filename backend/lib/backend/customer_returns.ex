@@ -434,7 +434,20 @@ defmodule Backend.CustomerReturns do
 
   # ----- state machine --------------------------------------------
 
-  def mark_received(%User{} = actor, %CustomerReturn{} = ret) do
+  @doc """
+  Transition an RMA from `draft` → `received`. When the caller
+  passes `opts["line_placements"]` — a map of
+  `line_uuid => %{"qty" => decimal, "cell_uuid" => uuid}` — each
+  named line spawns a new `stock_lot` in `quarantine` at the given
+  cell, with `source_kind = "return"` and `customer_return_id`
+  pointing back here. Lines omitted from the map create no stock
+  (paperwork-only receive — legit when the customer destroyed the
+  goods and only a credit note is due).
+
+  All lot creations run inside the same transaction as the status
+  flip — if any lot fails validation, the whole receive rolls back.
+  """
+  def mark_received(%User{} = actor, %CustomerReturn{} = ret, _opts \\ %{}) do
     if ret.status != "draft" do
       {:error, :bad_status}
     else
@@ -443,16 +456,33 @@ defmodule Backend.CustomerReturns do
       with :ok <- ensure_lines_present(ret) do
         now = DateTime.utc_now() |> DateTime.truncate(:second)
 
-        transition(actor, ret, %{
-          "status" => "received",
-          "received_at" => now,
-          "received_by_id" => actor.id,
-          "updated_by_id" => actor.id
-        })
+        Repo.transaction(fn ->
+          case transition(actor, ret, %{
+                 "status" => "received",
+                 "received_at" => now,
+                 "received_by_id" => actor.id,
+                 "updated_by_id" => actor.id
+               }) do
+            {:ok, after_state} ->
+              # Auto-create a draft goods-in inspection with
+              # `customer_return_id` set. Same table, same mobile
+              # wizard as PO deliveries — the source is implied by
+              # whichever FK is set (see DB CHECK
+              # `goods_in_inspections_source_xor`).
+              case Backend.GoodsIn.create_draft_for_rma(actor, after_state) do
+                {:ok, _insp} -> after_state
+                {:error, reason} -> Repo.rollback(reason)
+              end
+
+            {:error, reason} ->
+              Repo.rollback(reason)
+          end
+        end)
       end
     end
   end
 
+  # -------------------------------------------------------------------
   @doc """
   Accept the RMA. The caller may pass `line_decisions` — a map of
   `line_uuid => qty_accepted` — to update each line's accepted qty
@@ -474,7 +504,11 @@ defmodule Backend.CustomerReturns do
 
       Repo.transaction(fn ->
         with :ok <- update_line_acceptances(actor, ret, decisions),
-             ret_updated <- preload_rma(ret),
+             # Force-reload lines so `ensure_any_acceptance` reads the
+             # freshly-updated qty_accepted values (not the pre-update
+             # cache Ecto skips over on plain `preload/2` when the
+             # assoc is already loaded).
+             ret_updated <- Repo.preload(ret, [lines: :item], force: true),
              :ok <- ensure_any_acceptance(ret_updated),
              {:ok, after_state} <- do_accept_transition(actor, ret_updated),
              {:ok, credit_note} <-
@@ -495,35 +529,57 @@ defmodule Backend.CustomerReturns do
         nil ->
           {:cont, :ok}
 
-        raw_qty ->
-          attrs =
-            %{
-              "qty_accepted" => raw_qty,
-              "qty_returned" => line.qty_returned,
-              "unit_price" => line.unit_price
-            }
-            |> stamp_line_credit()
-
-          line
-          |> CustomerReturnLine.changeset(attrs)
-          |> Repo.update()
-          |> case do
-            {:ok, updated} ->
-              Audit.record_updated(
-                actor,
-                "customer_return_line",
-                updated,
-                %{qty_accepted: line.qty_accepted},
-                %{qty_accepted: updated.qty_accepted}
-              )
-
-              {:cont, :ok}
-
-            {:error, cs} ->
-              {:halt, {:error, cs}}
-          end
+        decision ->
+          apply_line_decision(actor, line, decision)
       end
     end)
+  end
+
+  # FE sends `{qty_accepted, inspection_notes?}` per the `CRAcceptInput`
+  # server-action contract; tolerate the legacy scalar-qty shape so an
+  # older FE build doesn't blow up mid-deploy.
+  defp apply_line_decision(actor, line, %{} = decision) do
+    qty =
+      decision["qty_accepted"] || decision[:qty_accepted] ||
+        decision["qty"] || decision[:qty]
+
+    notes =
+      decision["inspection_notes"] || decision[:inspection_notes]
+
+    persist_line_decision(actor, line, qty, notes)
+  end
+
+  defp apply_line_decision(actor, line, scalar_qty),
+    do: persist_line_decision(actor, line, scalar_qty, nil)
+
+  defp persist_line_decision(actor, line, qty, notes) do
+    attrs =
+      %{
+        "qty_accepted" => qty,
+        "qty_returned" => line.qty_returned,
+        "unit_price" => line.unit_price,
+        "inspection_notes" => notes
+      }
+      |> stamp_line_credit()
+
+    line
+    |> CustomerReturnLine.changeset(attrs)
+    |> Repo.update()
+    |> case do
+      {:ok, updated} ->
+        Audit.record_updated(
+          actor,
+          "customer_return_line",
+          updated,
+          %{qty_accepted: line.qty_accepted},
+          %{qty_accepted: updated.qty_accepted}
+        )
+
+        {:cont, :ok}
+
+      {:error, cs} ->
+        {:halt, {:error, cs}}
+    end
   end
 
   defp ensure_any_acceptance(%CustomerReturn{lines: lines}) do
@@ -576,6 +632,12 @@ defmodule Backend.CustomerReturns do
   end
 
   defp maybe_issue_credit_note(_actor, ret, false), do: {:ok, {ret, nil}}
+
+  # No invoice on the RMA → nothing to credit. Fires on internal /
+  # trial-batch returns where `customer_invoice_id` is null. Returns
+  # `nil` so ``accept`` still resolves as accepted-without-credit.
+  defp maybe_issue_credit_note(_actor, %CustomerReturn{customer_invoice_id: nil} = ret, _issue),
+    do: {:ok, {ret, nil}}
 
   defp maybe_issue_credit_note(actor, ret, _issue) do
     case CustomerInvoices.create_credit_note_from_rma(actor, ret) do

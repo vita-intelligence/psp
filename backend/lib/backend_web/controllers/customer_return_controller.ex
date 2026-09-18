@@ -205,11 +205,15 @@ defmodule BackendWeb.CustomerReturnController do
 
   # ----- state machine --------------------------------------------
 
-  def mark_received(conn, %{"customer_return_id" => uuid}) do
+  def mark_received(conn, %{"customer_return_id" => uuid} = params) do
     actor = conn.assigns.current_user
+    # `line_placements` map per line uuid: %{"qty" => "3", "cell_uuid" => "..."}.
+    # Absent = paperwork-only receive (no return lot created — used when
+    # the customer destroyed the goods and only a credit note is due).
+    opts = Map.take(params, ["line_placements"])
 
     with %{} = rma <- CustomerReturns.get_for_company(actor.company_id, uuid) do
-      case CustomerReturns.mark_received(actor, rma) do
+      case CustomerReturns.mark_received(actor, rma, opts) do
         {:ok, updated} ->
           json(conn, %{customer_return: Payloads.customer_return(updated)})
 
@@ -218,6 +222,41 @@ defmodule BackendWeb.CustomerReturnController do
 
         {:error, :no_lines} ->
           unprocessable(conn, "no_lines", "Add at least one line first.")
+
+        {:error, {line_uuid, :bad_qty}} ->
+          unprocessable(
+            conn,
+            "bad_qty",
+            "Line #{line_uuid}: qty must be a positive number."
+          )
+
+        {:error, {line_uuid, :qty_exceeds_returned}} ->
+          unprocessable(
+            conn,
+            "qty_exceeds_returned",
+            "Line #{line_uuid}: can't place more than the qty the customer returned on that line."
+          )
+
+        {:error, {line_uuid, :cell_required}} ->
+          unprocessable(
+            conn,
+            "cell_required",
+            "Line #{line_uuid}: pick a quarantine cell to place the returned stock."
+          )
+
+        {:error, {line_uuid, :cell_not_found}} ->
+          unprocessable(
+            conn,
+            "cell_not_found",
+            "Line #{line_uuid}: chosen cell not found."
+          )
+
+        {:error, {line_uuid, {:cell_wrong_purpose, purpose}}} ->
+          unprocessable(
+            conn,
+            "cell_wrong_purpose",
+            "Line #{line_uuid}: the cell you picked is a #{purpose} cell. Returns must land in a quarantine cell until QC clears them."
+          )
 
         {:error, %Ecto.Changeset{} = cs} ->
           changeset_error(conn, cs)

@@ -1155,6 +1155,14 @@ defmodule Backend.Stock do
       # receives + opening balances leave this NULL.
       po_line_id = attrs["__po_line_id__"]
 
+      # Return-lineage hand-off — set only when the caller is
+      # `Backend.CustomerReturns.mark_received`. Both FKs land on
+      # the new lot so the recall query "everywhere any unit of
+      # L00X ended up" and the RMA cross-link both work off a
+      # single-column index.
+      parent_lot_id = attrs["__parent_lot_id__"]
+      customer_return_id = attrs["__customer_return_id__"]
+
       lot_attrs =
         attrs
         |> Map.drop([
@@ -1165,13 +1173,17 @@ defmodule Backend.Stock do
           "status",
           "__service_source_kind__",
           "__po_line_id__",
-          "__goods_in_inspection_id__"
+          "__goods_in_inspection_id__",
+          "__parent_lot_id__",
+          "__customer_return_id__"
         ])
         |> Map.put("company_id", company_id)
         |> Map.put("item_id", item.id)
         |> Map.put("qty_received", total_qty)
         |> maybe_put("goods_in_inspection_id", goods_in_inspection_id)
         |> maybe_put("purchase_order_line_id", po_line_id)
+        |> maybe_put("parent_lot_id", parent_lot_id)
+        |> maybe_put("customer_return_id", customer_return_id)
         # Land at `expected` so the lifecycle event we emit below
         # (`received`) does the real status flip via the projection.
         # The lot row is never in `expected` for more than a few
@@ -3975,7 +3987,8 @@ defmodule Backend.Stock do
         select: %{cell: c, location: l, floor: f, warehouse: w}
 
     query
-    |> maybe_warehouse_filter(opts[:warehouse_id])
+    |> maybe_cell_warehouse_filter(opts[:warehouse_id])
+    |> maybe_cell_purpose_filter(opts[:purpose])
     |> maybe_cell_search(opts[:search])
     |> maybe_tag_match(item, opts[:match_tags])
     |> maybe_apply_cursor(opts[:cursor])
@@ -3984,15 +3997,40 @@ defmodule Backend.Stock do
     |> paginate_picker(limit)
   end
 
+  # Restrict picker results to cells whose ``purpose`` matches — used
+  # by flows where the destination purpose is prescribed (return-to-
+  # quarantine, dispatch pickup, etc.). ``nil`` means no filter, so
+  # existing callers keep their broad picker.
+  #
+  # Named ``cell_purpose_filter`` (not just ``purpose_filter``) to
+  # sit safely alongside any other module-level ``maybe_*_filter``
+  # helper — Elixir dispatches on first matching clause per module
+  # so overloading generic names against different query shapes
+  # silently mis-routes the wrong binding (that bug bit us with
+  # ``maybe_warehouse_filter`` — see the sibling cell-warehouse
+  # helper below).
+  defp maybe_cell_purpose_filter(query, nil), do: query
+  defp maybe_cell_purpose_filter(query, ""), do: query
+
+  defp maybe_cell_purpose_filter(query, purpose) when is_binary(purpose) do
+    where(query, [c, _l, _f, _w], c.purpose == ^purpose)
+  end
+
+  # Cell-picker binding is ``[c, l, f, w]`` (cell, location, floor,
+  # warehouse). The LOTS-list helper ``maybe_warehouse_filter/2``
+  # further up in this module treats the first binding as a lot and
+  # applies a lot-scoped subquery — dispatching to it here silently
+  # matched cell.id against lot ids and returned zero rows. Own
+  # helper name here keeps the two shapes apart.
+  defp maybe_cell_warehouse_filter(query, nil), do: query
+
+  defp maybe_cell_warehouse_filter(query, warehouse_id) when is_integer(warehouse_id) do
+    where(query, [_c, _l, _f, w], w.id == ^warehouse_id)
+  end
+
   defp normalise_limit(nil), do: @picker_limit_default
   defp normalise_limit(n) when is_integer(n) and n > 0, do: min(n, @picker_limit_max)
   defp normalise_limit(_), do: @picker_limit_default
-
-  defp maybe_warehouse_filter(query, nil), do: query
-
-  defp maybe_warehouse_filter(query, warehouse_id) when is_integer(warehouse_id) do
-    where(query, [c, _l, _f, w], w.id == ^warehouse_id)
-  end
 
   defp maybe_cell_search(query, nil), do: query
   defp maybe_cell_search(query, ""), do: query

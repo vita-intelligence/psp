@@ -1135,6 +1135,10 @@ defmodule BackendWeb.StockLotController do
       warehouse_id: parse_int(params["warehouse_id"]),
       item_id: parse_int(params["item_id"]),
       match_tags: parse_bool(params["match_tags"], true),
+      # Restrict results to cells whose ``purpose`` matches. Used
+      # by the RMA-receive modal to narrow the picker to quarantine
+      # cells only. Absent / empty = no filter.
+      purpose: params["purpose"],
       limit: parse_int(params["limit"]),
       cursor: params["cursor"]
     ]

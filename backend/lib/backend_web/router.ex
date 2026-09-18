@@ -1801,6 +1801,7 @@ defmodule BackendWeb.Router do
     delete "/:comment_uuid/reactions", CommentsController, :remove_reaction
   end
 
+
   scope "/api/loyalty/programs/:entity_uuid/comments", BackendWeb do
     pipe_through [:api_authed, :comments_loyalty_program]
 

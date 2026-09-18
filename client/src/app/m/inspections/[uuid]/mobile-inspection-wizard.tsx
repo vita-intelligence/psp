@@ -356,7 +356,7 @@ export function MobileInspectionWizard({
     () => {
       const savedLineUuids = new Set(
         (inspection.items ?? [])
-          .map((it) => it.purchase_order_line_uuid)
+          .map(sourceLineUuidOf)
           .filter((u): u is string => Boolean(u)),
       );
       if (savedLineUuids.size > 0) return savedLineUuids;
@@ -804,7 +804,7 @@ export function MobileInspectionWizard({
             // grey even though BE has the data.
             setInspection((prev) => {
               const others = (prev.items ?? []).filter(
-                (it) => it.purchase_order_line_uuid !== line.uuid,
+                (it) => sourceLineUuidOf(it) !== line.uuid,
               );
               return { ...prev, items: [...others, res.item] };
             });
@@ -927,7 +927,11 @@ export function MobileInspectionWizard({
       const res = await deleteInspectionAction(inspection.uuid);
       if (res.ok) {
         toast.success("Draft delivery deleted");
-        router.replace(`/m/incoming/${purchaseOrder.uuid}`);
+        router.replace(
+          inspection.customer_return_id
+            ? "/m/inspections"
+            : `/m/incoming/${purchaseOrder.uuid}`,
+        );
       } else {
         setError(res);
       }
@@ -1068,15 +1072,23 @@ export function MobileInspectionWizard({
         className="sticky top-0 z-20 flex items-center gap-2 border-b border-border/60 bg-background/95 px-3 py-3 backdrop-blur"
         data-testid="wizard-header"
       >
-        {/* Header button always exits to the PO pre-receive page —
+        {/* Header button always exits to a safe landing page —
             label says "Exit" so the operator never confuses it with
-            "back one step" (that lives in the footer). Explicit push
-            to /m/incoming/<uuid> instead of router.back() so a deep
-            link (QR scan straight into the wizard) still lands on
-            the right page rather than off the site. */}
+            "back one step" (that lives in the footer). PO-backed
+            inspections drop the operator back on the PO pre-receive
+            page (so they see the other lines waiting). RMA-backed
+            inspections drop back on /m/inspections (no equivalent
+            RMA "pre-receive" hub — the inspection is auto-created
+            on desk-side mark-received). */}
         <button
           type="button"
-          onClick={() => router.push(`/m/incoming/${purchaseOrder.uuid}`)}
+          onClick={() =>
+            router.push(
+              inspection.customer_return_id
+                ? "/m/inspections"
+                : `/m/incoming/${purchaseOrder.uuid}`,
+            )
+          }
           className="flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium text-muted-foreground active:bg-muted"
           aria-label="Exit inspection"
         >
@@ -1616,7 +1628,7 @@ export function MobileInspectionWizard({
                   <div className="flex gap-1">
                     {walkableLines.map((l, i) => {
                       const submitted = (inspection.items ?? []).some(
-                        (it) => it.purchase_order_line_uuid === l.uuid,
+                        (it) => sourceLineUuidOf(it) === l.uuid,
                       );
                       return (
                         <span
@@ -1911,6 +1923,15 @@ interface ItemDraft {
   material_decision_reason: string;
 }
 
+// Every `InspectionItem` carries one of two source-line uuids:
+// `purchase_order_line_uuid` (supplier delivery) or
+// `customer_return_line_uuid` (RMA return). The wizard always refers
+// to them by whichever one is set — the underlying `line.uuid` the
+// operator sees on screen equals either.
+function sourceLineUuidOf(item: InspectionItem): string | null {
+  return item.purchase_order_line_uuid ?? item.customer_return_line_uuid ?? null;
+}
+
 function newPackId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -2093,10 +2114,14 @@ function packDraftToWire(p: PackDraft): InspectionItemPack {
 
 // Re-hydrate operator drafts from the server payload. When an
 // inspection was saved previously we get its `packs` list back and
-// each becomes one editable row; legacy rows without packs (or a
-// brand-new line) get a single empty pack so the operator has
-// something to fill in.
-function hydratePacks(item: InspectionItem | undefined): PackDraft[] {
+// each becomes one editable row. On a fresh line we seed ONE pack
+// pre-filled with the line's outstanding qty so the operator can
+// jump straight to entering dimensions — no need to retype what the
+// PO / RMA already told us.
+function hydratePacks(
+  item: InspectionItem | undefined,
+  line?: PurchaseOrderLine,
+): PackDraft[] {
   if (item && Array.isArray(item.packs) && item.packs.length > 0) {
     return item.packs.map((p) => ({
       tempId: newPackId(),
@@ -2119,24 +2144,39 @@ function hydratePacks(item: InspectionItem | undefined): PackDraft[] {
       expiry_at: p.expiry_at ?? "",
     }));
   }
-  return [makeDefaultPack()];
+  // Pre-fill the qty with what the source doc says is expected —
+  // `qty_ordered − qty_received` for a PO delivery, `qty_returned`
+  // for an RMA (the synthesized PO sets `qty_received: "0"` so both
+  // paths reduce to the same subtraction).
+  const seedQty = line
+    ? Math.max(
+        (Number(line.qty_ordered) || 0) - (Number(line.qty_received) || 0),
+        0,
+      )
+    : 0;
+  return [makeDefaultPack(seedQty > 0 ? String(seedQty) : "")];
 }
 
 function buildInitialItems(
   lines: PurchaseOrderLine[],
   existing: InspectionItem[],
 ): Record<string, ItemDraft> {
+  // Existing items key by whichever source-line uuid they carry.
+  // PO-backed items stamp `purchase_order_line_uuid`; RMA-backed
+  // items stamp `customer_return_line_uuid`. Both map back onto the
+  // wizard's `line.uuid`, which is the synthesized PO line uuid the
+  // operator sees on screen (equal to the underlying RMA line uuid
+  // for return inspections — see `synthesizePOFromRMA` in page.tsx).
   const byLineUuid = new Map<string, InspectionItem>();
   for (const item of existing) {
-    if (item.purchase_order_line_uuid) {
-      byLineUuid.set(item.purchase_order_line_uuid, item);
-    }
+    const key = item.purchase_order_line_uuid ?? item.customer_return_line_uuid;
+    if (key) byLineUuid.set(key, item);
   }
   const out: Record<string, ItemDraft> = {};
   for (const line of lines) {
     const match = byLineUuid.get(line.uuid);
     out[line.uuid] = {
-      packs: hydratePacks(match),
+      packs: hydratePacks(match, line),
       packaging_condition: (match?.packaging_condition as PackagingCondition) ?? "",
       packaging_condition_notes: match?.packaging_condition_notes ?? "",
       material_decision: match?.material_decision ?? "accept",
@@ -2147,7 +2187,10 @@ function buildInitialItems(
 }
 
 function lineMatchesItem(item: InspectionItem, line: PurchaseOrderLine): boolean {
-  return item.purchase_order_line_uuid === line.uuid;
+  return (
+    item.purchase_order_line_uuid === line.uuid ||
+    item.customer_return_line_uuid === line.uuid
+  );
 }
 
 const LineCard = memo(function LineCard({
@@ -2446,7 +2489,7 @@ function LineSelector({
     () =>
       new Set(
         (inspection.items ?? [])
-          .map((it) => it.purchase_order_line_uuid)
+          .map(sourceLineUuidOf)
           .filter((u): u is string => Boolean(u)),
       ),
     [inspection.items],
@@ -3014,7 +3057,7 @@ function buildPrintablePacksFromInspection(
   const linesByUuid = new Map(lines.map((l) => [l.uuid, l]));
   const out: PrintablePack[] = [];
   for (const item of inspection.items) {
-    const lineUuid = item.purchase_order_line_uuid;
+    const lineUuid = sourceLineUuidOf(item);
     if (!lineUuid) continue;
     const line = linesByUuid.get(lineUuid);
     const itemName = line ? itemNameFor(line) : "Unknown item";
@@ -3323,14 +3366,13 @@ function ReadOnlySummary({
             // avoids the fake round-trip entirely.
             if (updatedItems.length === 0) return;
             const byLineUuid = new Map(
-              updatedItems.map((it) => [it.purchase_order_line_uuid, it]),
+              updatedItems.map((it) => [sourceLineUuidOf(it), it]),
             );
             const nextItems = inspection.items.map((existing) => {
-              const replacement = byLineUuid.get(
-                existing.purchase_order_line_uuid,
-              );
-              if (replacement) {
-                byLineUuid.delete(existing.purchase_order_line_uuid);
+              const key = sourceLineUuidOf(existing);
+              const replacement = key ? byLineUuid.get(key) : undefined;
+              if (replacement && key) {
+                byLineUuid.delete(key);
                 return replacement;
               }
               return existing;

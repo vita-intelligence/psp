@@ -16,6 +16,7 @@ defmodule Backend.GoodsIn.InspectionItem do
   import Ecto.Changeset
 
   alias Backend.Companies.Company
+  alias Backend.CustomerReturns.CustomerReturnLine
   alias Backend.GoodsIn.Inspection
   alias Backend.Purchasing.PurchaseOrderLine
 
@@ -49,6 +50,10 @@ defmodule Backend.GoodsIn.InspectionItem do
     belongs_to :company, Company
     belongs_to :goods_in_inspection, Inspection
     belongs_to :purchase_order_line, PurchaseOrderLine
+    # RMA source (mutually exclusive with purchase_order_line per DB
+    # CHECK `goods_in_inspection_items_source_xor`). Set when the
+    # parent inspection is against a customer return.
+    belongs_to :customer_return_line, CustomerReturnLine
 
     timestamps(type: :utc_datetime)
   end
@@ -62,6 +67,7 @@ defmodule Backend.GoodsIn.InspectionItem do
       :company_id,
       :goods_in_inspection_id,
       :purchase_order_line_id,
+      :customer_return_line_id,
       :qty_received,
       :packaging_condition,
       :packaging_condition_notes,
@@ -72,10 +78,10 @@ defmodule Backend.GoodsIn.InspectionItem do
     |> validate_required([
       :company_id,
       :goods_in_inspection_id,
-      :purchase_order_line_id,
       :qty_received,
       :material_decision
     ])
+    |> validate_exactly_one_line()
     |> validate_inclusion(:material_decision, @material_decisions)
     |> maybe_validate_inclusion(:packaging_condition, @packaging_conditions)
     |> validate_number(:qty_received, greater_than_or_equal_to: 0)
@@ -84,9 +90,33 @@ defmodule Backend.GoodsIn.InspectionItem do
     |> validate_length(:packaging_condition_notes, max: 2000)
     |> validate_length(:material_decision_reason, max: 2000)
     |> unique_constraint([:goods_in_inspection_id, :purchase_order_line_id],
-      name: :goods_in_items_inspection_line_index,
+      name: :goods_in_items_inspection_po_line_index,
       message: "a decision row for this line already exists on this inspection"
     )
+    |> unique_constraint([:goods_in_inspection_id, :customer_return_line_id],
+      name: :goods_in_items_inspection_rma_line_index,
+      message: "a decision row for this line already exists on this inspection"
+    )
+  end
+
+  defp validate_exactly_one_line(changeset) do
+    po = get_field(changeset, :purchase_order_line_id)
+    rma = get_field(changeset, :customer_return_line_id)
+
+    cond do
+      is_nil(po) and is_nil(rma) ->
+        add_error(changeset, :purchase_order_line_id,
+          "either purchase_order_line_id or customer_return_line_id is required"
+        )
+
+      not is_nil(po) and not is_nil(rma) ->
+        add_error(changeset, :customer_return_line_id,
+          "cannot set both purchase_order_line_id and customer_return_line_id"
+        )
+
+      true ->
+        changeset
+    end
   end
 
   defp validate_decision_reason(changeset) do

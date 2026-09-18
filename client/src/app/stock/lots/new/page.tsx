@@ -29,7 +29,7 @@ export default async function ReceiveLotPage() {
       <StockSubnav />
 
       <main className="flex-1 px-4 py-8 sm:px-8 sm:py-12">
-        <div className="mx-auto max-w-4xl space-y-6">
+        <div className="mx-auto w-full space-y-6">
           <Link
             href="/stock/lots"
             className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"

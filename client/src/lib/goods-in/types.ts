@@ -77,16 +77,56 @@ export interface InspectionItemPack {
   expiry_at?: string | null;
 }
 
+/** RMA-source context embedded in the inspection payload. Mirrors the
+ *  `PurchaseOrder + lines` shape so the wizard can render either
+ *  source with minimal branching. */
+export interface InspectionCustomerReturnLine {
+  uuid: string;
+  item_id: number | null;
+  item: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    name: string;
+  } | null;
+  qty_returned: string;
+  reason_code: string | null;
+  unit_price: string | null;
+}
+
+export interface InspectionCustomerReturn {
+  id: number;
+  uuid: string;
+  code: string | null;
+  status: string;
+  customer: {
+    id: number;
+    uuid: string;
+    name: string;
+  } | null;
+  customer_invoice: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    status: string;
+    kind: string;
+  } | null;
+  lines: InspectionCustomerReturnLine[];
+}
+
 export interface InspectionItem {
   id: number;
   uuid: string;
-  purchase_order_line_id: number;
+  purchase_order_line_id: number | null;
   /** Parent PO line uuid — present when the inspection was fetched
    *  via `GoodsIn.get/2` (which preloads `items: [:purchase_order_line]`).
    *  The wizard joins on this so it can rebuild local state from the
    *  server-returned items list without having a line.id on the public
    *  PO payload. */
   purchase_order_line_uuid: string | null;
+  /** RMA line source (mutually exclusive with `purchase_order_line_id`). */
+  customer_return_line_id: number | null;
+  customer_return_line_uuid: string | null;
   qty_received: string;
   packaging_condition: PackagingCondition | null;
   packaging_condition_notes: string | null;
@@ -140,15 +180,20 @@ export interface Inspection {
   /** Base64 data URL of the approver's signature. Same caveat as the
    *  operator one — detail payload only. */
   quality_approver_signature_image: string | null;
-  purchase_order_id: number;
+  purchase_order_id: number | null;
   /** Parent PO uuid — present whenever the inspection was loaded via
    *  `GoodsIn.get/2` (which preloads `:purchase_order`). The FE uses
    *  it to fetch the PO for line metadata without having to round-trip
-   *  through the integer id. */
+   *  through the integer id. Null when the inspection is RMA-backed. */
   purchase_order_uuid: string | null;
   /** Parent PO code (e.g. `PO00042`) — present when the inspection
    *  was loaded with `:purchase_order` preloaded. Nullable otherwise. */
   purchase_order_code: string | null;
+  /** RMA source (mutually exclusive with `purchase_order_id`).
+   *  Present when the inspection was auto-created by
+   *  `CustomerReturns.mark_received/3`. */
+  customer_return_id: number | null;
+  customer_return: InspectionCustomerReturn | null;
   items: InspectionItem[];
   files: InspectionFile[];
   inserted_at: string;

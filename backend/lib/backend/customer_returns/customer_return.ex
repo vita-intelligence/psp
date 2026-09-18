@@ -71,7 +71,12 @@ defmodule Backend.CustomerReturns.CustomerReturn do
       :created_by_id,
       :updated_by_id
     ])
-    |> validate_required([:company_id, :customer_id, :return_date])
+    # `customer_id` is now optional so the same doc + workflow can
+    # carry internal returns (trial batches, R&D, quarantine
+    # re-inspection of our own product) alongside customer-originated
+    # returns. When null, ``accept`` skips credit-note issuance —
+    # nothing to credit against without an invoice.
+    |> validate_required([:company_id, :return_date])
     |> validate_length(:reason_summary, max: 240)
     |> validate_length(:notes, max: 4000)
   end

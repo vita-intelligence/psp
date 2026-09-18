@@ -252,13 +252,16 @@ defmodule Backend.Mobile do
     end
   end
 
-  # Submitted inspections — inspection rows waiting on QC sign-off.
-  # This is what the mobile Inspections tile badges. A capped count on
-  # `status = "submitted"` is enough — inspections are a narrow row
-  # count in practice (measured in tens, not thousands).
+  # Open inspections — draft + submitted rows that need someone's
+  # attention. Drafts are on the operator to fill; submitted rows are
+  # on QA to sign off. Both count toward the mobile Inspections tile
+  # badge so an operator sees "you have work to do" the moment an RMA
+  # is marked received (or a PO delivery lands).
   defp count_submitted_inspections(company_id) do
     from(i in Backend.GoodsIn.Inspection,
-      where: i.company_id == ^company_id and i.status == "submitted",
+      where:
+        i.company_id == ^company_id and
+          i.status in ["draft", "submitted"],
       select: %{one: 1}
     )
     |> capped_count()

@@ -277,7 +277,7 @@ defmodule BackendWeb.GoodsInInspectionController do
     actor = conn.assigns.current_user
 
     with %{} = inspection <- GoodsIn.get(actor.company_id, uuid),
-         %{} = line <- fetch_po_line(inspection.purchase_order_id, line_uuid),
+         %{} = line <- fetch_source_line(inspection, line_uuid),
          {:ok, item} <-
            GoodsIn.upsert_item_decision(
              actor,
@@ -313,7 +313,7 @@ defmodule BackendWeb.GoodsInInspectionController do
     actor = conn.assigns.current_user
 
     with %{} = inspection <- GoodsIn.get(actor.company_id, uuid),
-         %{} = line <- fetch_po_line(inspection.purchase_order_id, line_uuid),
+         %{} = line <- fetch_source_line(inspection, line_uuid),
          {:ok, item} <-
            GoodsIn.qc_edit_item_decision(
              actor,
@@ -674,6 +674,35 @@ defmodule BackendWeb.GoodsInInspectionController do
   end
 
   defp fetch_po_line(_, _), do: nil
+
+  # Route to the correct line schema by inspection source: PO-backed
+  # inspections resolve against PurchaseOrderLine; RMA-backed
+  # inspections resolve against CustomerReturnLine. Same `line_uuid`
+  # URL param, different table.
+  defp fetch_source_line(%Inspection{purchase_order_id: po_id}, line_uuid)
+       when is_integer(po_id) do
+    fetch_po_line(po_id, line_uuid)
+  end
+
+  defp fetch_source_line(
+         %Inspection{customer_return_id: rma_id},
+         line_uuid
+       )
+       when is_integer(rma_id) and is_binary(line_uuid) do
+    case Ecto.UUID.cast(line_uuid) do
+      {:ok, cast} ->
+        Repo.one(
+          from(l in Backend.CustomerReturns.CustomerReturnLine,
+            where: l.customer_return_id == ^rma_id and l.uuid == ^cast
+          )
+        )
+
+      :error ->
+        nil
+    end
+  end
+
+  defp fetch_source_line(_, _), do: nil
 
   defp changeset_error(conn, %Ecto.Changeset{} = cs) do
     conn

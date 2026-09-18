@@ -5347,6 +5347,12 @@ defmodule BackendWeb.Payloads do
       purchase_order_id: i.purchase_order_id,
       purchase_order_uuid: maybe_po_uuid(i),
       purchase_order_code: maybe_po_code(i),
+      # RMA source (mutually exclusive with purchase_order per DB
+      # CHECK). Present with `lines` embed so the wizard renders the
+      # per-line walk from the RMA without a follow-up fetch — same
+      # shape the PO branch consumes.
+      customer_return_id: i.customer_return_id,
+      customer_return: maybe_customer_return_summary(i.customer_return),
       items: maybe_list(i.items, &goods_in_inspection_item/1),
       files: preloaded_list(i, :files, fn f -> goods_in_inspection_file(f, i) end),
       inserted_at: i.inserted_at,
@@ -5403,10 +5409,26 @@ defmodule BackendWeb.Payloads do
       quality_approver: actor(i, :quality_approver),
       quality_approver_signed_at: i.quality_approver_signed_at,
       purchase_order: maybe_po_summary(i.purchase_order),
+      # RMA-backed inspections carry a customer_return instead of a
+      # purchase_order. The mobile list-row falls back to this when
+      # the PO slot is null so the row can render either source.
+      customer_return: maybe_customer_return_ref(i.customer_return),
       inserted_at: i.inserted_at,
       updated_at: i.updated_at
     }
   end
+
+  defp maybe_customer_return_ref(%Backend.CustomerReturns.CustomerReturn{} = cr) do
+    %{
+      id: cr.id,
+      uuid: cr.uuid,
+      code: render_code(cr, "customer_return"),
+      status: cr.status,
+      customer: preloaded_or_nil(cr, :customer, &customer_summary/1)
+    }
+  end
+
+  defp maybe_customer_return_ref(_), do: nil
 
   defp maybe_po_summary(%Backend.Purchasing.PurchaseOrder{} = po) do
     %{
@@ -5426,6 +5448,11 @@ defmodule BackendWeb.Payloads do
       uuid: item.uuid,
       purchase_order_line_id: item.purchase_order_line_id,
       purchase_order_line_uuid: maybe_po_line_uuid(item),
+      # RMA-backed inspection items reference a customer_return_line
+      # instead of a PO line. Both fields are always present; the null
+      # one tells the FE which source drives the row.
+      customer_return_line_id: item.customer_return_line_id,
+      customer_return_line_uuid: maybe_cr_line_uuid(item),
       qty_received: item.qty_received,
       packaging_condition: item.packaging_condition,
       packaging_condition_notes: item.packaging_condition_notes,
@@ -5442,6 +5469,42 @@ defmodule BackendWeb.Payloads do
 
   defp maybe_list(items, fun) when is_list(items), do: Enum.map(items, fun)
   defp maybe_list(_, _), do: []
+
+  # ----- Return Inspections -----------------------------------------
+
+  # ----- Shared helpers for the goods_in payload's RMA branch ------
+
+  defp maybe_cr_line_uuid(%{customer_return_line: %{uuid: uuid}}) when is_binary(uuid), do: uuid
+  defp maybe_cr_line_uuid(_), do: nil
+
+  defp maybe_customer_return_summary(%Backend.CustomerReturns.CustomerReturn{} = cr) do
+    %{
+      id: cr.id,
+      uuid: cr.uuid,
+      code: render_code(cr, "customer_return"),
+      status: cr.status,
+      customer: preloaded_or_nil(cr, :customer, &customer_summary/1),
+      customer_invoice: maybe_customer_invoice_ref(cr.customer_invoice),
+      # Lines are what the wizard actually cares about — every package
+      # ties back to one line, so the FE needs to render "add box for
+      # <item> (of qty_returned)".
+      lines: preloaded_list(cr, :lines, &customer_return_line/1)
+    }
+  end
+
+  defp maybe_customer_return_summary(_), do: nil
+
+  defp maybe_customer_invoice_ref(%Backend.CustomerInvoices.CustomerInvoice{} = inv) do
+    %{
+      id: inv.id,
+      uuid: inv.uuid,
+      code: render_code(inv, "customer_invoice"),
+      status: inv.status,
+      kind: inv.kind
+    }
+  end
+
+  defp maybe_customer_invoice_ref(_), do: nil
 
   @doc """
   Suggest-price endpoint payload. Returns `nil` when there's no
@@ -5907,6 +5970,28 @@ defmodule BackendWeb.Payloads do
       # balance, adjustment, manual, etc.) or when the parent row
       # has since been deleted; the FE / label fall back sensibly.
       source_code: resolve_source_code(l.source_kind, l.source_ref),
+      # Return lineage — set only when source_kind = "return". Powers
+      # the "Returned from" chip on the lot detail page + the recall
+      # traceback query. Nullable on every other lot.
+      parent_lot_id: l.parent_lot_id,
+      parent_lot:
+        preloaded_or_nil(l, :parent_lot, fn parent ->
+          %{
+            id: parent.id,
+            uuid: parent.uuid,
+            code: render_code(parent, "stock_lot"),
+            supplier_batch_no: parent.supplier_batch_no
+          }
+        end),
+      customer_return_id: l.customer_return_id,
+      customer_return:
+        preloaded_or_nil(l, :customer_return, fn cr ->
+          %{
+            id: cr.id,
+            uuid: cr.uuid,
+            code: render_code(cr, "customer_return")
+          }
+        end),
       supplier_batch_no: l.supplier_batch_no,
       country_of_origin: l.country_of_origin,
       revision: l.revision,

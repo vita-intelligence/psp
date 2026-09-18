@@ -96,8 +96,12 @@ export default async function RMADetailPage({
                 >
                   {rma.customer.name}
                 </Link>
+              ) : rma.customer?.name ? (
+                rma.customer.name
               ) : (
-                rma.customer?.name ?? "—"
+                <span className="italic text-muted-foreground">
+                  Internal return
+                </span>
               )
             }
             subtitle={
@@ -137,7 +141,11 @@ export default async function RMADetailPage({
           <RMALinesCard
             rma={rma}
             canEdit={canEdit && isDraft}
-            canInspect={canResolve && rma.status === "received"}
+            // Per-line inspection (qty_accepted + inspection_notes) is
+            // mobile-only — the goods-in wizard on
+            // /m/inspections/[uuid] is the sole entry point for QC to
+            // record their per-line decision.
+            canInspect={false}
             prefs={company}
           />
 

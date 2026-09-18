@@ -326,6 +326,7 @@ defmodule Backend.RBAC.Permissions do
      "Sign as quality approver and record the QC verdict on an inspection"}
   ]
 
+
   # Production — BOM management is the first piece. Manufacturing
   # orders, routings, workstations, and the schedule follow in
   # future passes; their permission codes will slot in here keeping
@@ -925,7 +926,7 @@ defmodule Backend.RBAC.Permissions do
             create: nil,
             update: "goods_in.approve",
             delete: nil
-          }
+          },
         ]
       },
       %{

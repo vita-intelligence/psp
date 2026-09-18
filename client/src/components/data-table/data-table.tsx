@@ -493,15 +493,28 @@ export function DataTable<T>({
                 (href || onRowClick) && "transition-colors hover:bg-muted/30",
               );
               if (href) {
+                // Absolute-overlay Link + card-body sibling (same
+                // pattern as the desktop rows above). Nested <Link>s
+                // inside cell content (e.g. the Item / Lot columns
+                // on /stock/write-offs) would be <a>-in-<a> if we
+                // wrapped the whole card in Link — the overlay
+                // trick keeps native anchor semantics without
+                // breaking hydration.
                 return (
-                  <Link
+                  <div
                     key={rowKey(row)}
-                    href={href}
                     data-collab-id={`row:${tableId}:${rowKey(row)}`}
-                    className={cardClass}
+                    className={cn(cardClass, "relative")}
                   >
-                    {cardBody}
-                  </Link>
+                    <Link
+                      href={href}
+                      className="absolute inset-0 z-0 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+                      aria-label="Open detail"
+                    />
+                    <div className="pointer-events-none relative z-0 [&_a]:pointer-events-auto [&_button]:pointer-events-auto [&_[role=button]]:pointer-events-auto [&_a]:relative [&_a]:z-10 [&_button]:relative [&_button]:z-10 [&_[role=button]]:relative [&_[role=button]]:z-10">
+                      {cardBody}
+                    </div>
+                  </div>
                 );
               }
               return (

@@ -30,7 +30,8 @@ export type CRAcceptResult =
   | ErrorResult;
 
 export interface CustomerReturnInput {
-  customer_id?: number;
+  /** Nullable — internal / trial-batch returns have no customer. */
+  customer_id?: number | null;
   customer_invoice_id?: number | null;
   return_date?: string | null;
   reason_summary?: string | null;
@@ -185,8 +186,18 @@ export async function removeCRLineAction(
 
 // ----- state transitions ----------------------------------------
 
+/** Per-line placement instructions when marking an RMA received.
+ *  Keyed by RMA line uuid → qty + destination cell uuid. Lines
+ *  omitted from the map create no stock (paperwork-only receive —
+ *  legit when the customer destroyed the goods and only a credit
+ *  note is due). */
+export interface MarkRMAReceivedInput {
+  line_placements?: Record<string, { qty: string; cell_uuid: string }>;
+}
+
 export async function markRMAReceivedAction(
   uuid: string,
+  input: MarkRMAReceivedInput = {},
 ): Promise<CRResult> {
   const token = await getSessionToken();
   if (!token) return unauthorizedResult("markRMAReceivedAction");
@@ -194,10 +205,15 @@ export async function markRMAReceivedAction(
   try {
     const res = await api<{ customer_return: CustomerReturn }>(
       `/api/customer-returns/${encodeURIComponent(uuid)}/mark-received`,
-      { method: "POST", token },
+      {
+        method: "POST",
+        token,
+        body: JSON.stringify(input),
+      },
     );
     revalidatePath("/sales/returns");
     revalidatePath(`/sales/returns/${uuid}`);
+    revalidatePath("/stock/lots");
     return { ok: true, customer_return: res.customer_return };
   } catch (err) {
     return toErrorResult(err, {

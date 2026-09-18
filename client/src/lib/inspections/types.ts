@@ -31,6 +31,19 @@ export interface InspectionSummary {
       name: string;
     } | null;
   } | null;
+  /** RMA source (mutually exclusive with `purchase_order`). Set when
+   *  the inspection was auto-created by an RMA mark-received. */
+  customer_return: {
+    id: number;
+    uuid: string;
+    code: string | null;
+    status: string;
+    customer: {
+      id: number;
+      uuid: string;
+      name: string;
+    } | null;
+  } | null;
   inserted_at: string;
   updated_at: string;
 }
