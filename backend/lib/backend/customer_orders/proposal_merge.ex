@@ -566,11 +566,27 @@ defmodule Backend.CustomerOrders.ProposalMerge do
     # source formulation via ``npd_source_formulation_uuid``).
     is_reorder = params["npd_is_reorder"] == true
 
+    # Resolve the REAL customer from the payload — RTG SKUs have no
+    # ``formulation.customer`` at save-version time, so the RTG COs
+    # historically inherited the "NPD Placeholder" customer forever
+    # and the customer's portal never got the shipment / production
+    # updates PSP was firing. vita-cff's proposal-merge payload now
+    # carries ``customer_uuid`` + ``customer_display_name``; use them
+    # for both the seeded template AND the customer's fresh CO below.
+    placeholder =
+      Backend.CustomerOrders.NpdSync.ensure_placeholder_customer(company_id)
+
+    active_customer =
+      Backend.CustomerOrders.NpdSync.resolve_customer(
+        company_id, placeholder, params
+      )
+
     template =
       cond do
         not is_nil(template) -> template
         is_reorder -> template
-        true -> seed_rtg_template!(company_id, primary_uuid, params)
+        true ->
+          seed_rtg_template!(company_id, primary_uuid, active_customer, params)
       end
 
     if is_nil(template) do
@@ -597,12 +613,18 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       end
 
     # Seed a fresh CO with the identity fields the formulation-sync
-    # already established (company, customer, currency, warehouse,
-    # tax rate, R&D team names, app_url). The proposal-identity
-    # attrs land in the same changeset via ``apply_proposal_identity``.
+    # already established (company, currency, warehouse, tax rate,
+    # R&D team names, app_url). ``customer_id`` comes from the
+    # RESOLVED payload customer above, not from ``template.customer_id``
+    # — the template's own customer is the placeholder for RTG (RTG
+    # SKUs have no owner at catalog time), and for reorders the
+    # source Custom CO's customer happens to also be the reorder's
+    # customer (same person), so this branch is safe for both. The
+    # proposal-identity attrs land in the same changeset via
+    # ``apply_proposal_identity``.
     fresh_attrs = %{
       company_id: template.company_id,
-      customer_id: template.customer_id,
+      customer_id: active_customer.id,
       currency_code: template.currency_code,
       tax_rate: template.tax_rate,
       discount_pct: template.discount_pct || Decimal.new(0),
@@ -642,6 +664,34 @@ defmodule Backend.CustomerOrders.ProposalMerge do
   end
 
   defp refresh_existing(%CustomerOrder{} = primary, line_specs, params) do
+    # Also refresh the ``customer_id`` FK from the payload. NPD is
+    # authoritative for the proposal's customer identity — a swap
+    # here just picks up whatever the proposal points at now. The
+    # RTG case is why this is here: RTG COs landed pre-fix with the
+    # placeholder customer and need to backfill to the real one on
+    # the next sync, even after the CO reached ``confirmed``. Custom
+    # + reorder no-op through this branch when the payload customer
+    # matches the CO's existing FK (which it always does — Custom
+    # syncs the same customer at save_version + proposal time).
+    placeholder =
+      Backend.CustomerOrders.NpdSync.ensure_placeholder_customer(
+        primary.company_id
+      )
+
+    active_customer =
+      Backend.CustomerOrders.NpdSync.resolve_customer(
+        primary.company_id, placeholder, params
+      )
+
+    primary =
+      if primary.customer_id != active_customer.id do
+        primary
+        |> Ecto.Changeset.change(%{customer_id: active_customer.id})
+        |> Repo.update!()
+      else
+        primary
+      end
+
     primary
     |> apply_proposal_identity(primary.npd_proposal_uuid, params)
     |> replace_lines_from_specs(line_specs)
@@ -671,16 +721,18 @@ defmodule Backend.CustomerOrders.ProposalMerge do
   # the SKU's very first customer order. Reorders never reach here
   # (their template lookup always resolves via the source formulation
   # uuid — see ``rtg_fresh_merge`` above).
-  defp seed_rtg_template!(company_id, npd_formulation_uuid, params) do
-    placeholder =
-      Backend.CustomerOrders.NpdSync.ensure_placeholder_customer(company_id)
-
+  defp seed_rtg_template!(
+         company_id,
+         npd_formulation_uuid,
+         %Backend.Customers.Customer{} = active_customer,
+         params
+       ) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
     attrs = %{
       company_id: company_id,
-      customer_id: placeholder.id,
-      currency_code: placeholder.currency_code || "GBP",
+      customer_id: active_customer.id,
+      currency_code: active_customer.currency_code || "GBP",
       status: "draft",
       sample_kind: false,
       is_reorder: false,

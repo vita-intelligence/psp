@@ -394,7 +394,21 @@ defmodule Backend.CustomerOrders.NpdSync do
   #       3. New customer — landed as ``approval_status: draft`` since
   #          the PSP qualification flow still owns approval.
 
-  defp resolve_customer(company_id, placeholder, params) do
+  @doc """
+  Resolve the real customer shell from an NPD sync payload, or snap
+  back to the per-tenant placeholder when the payload carries no
+  customer identity.
+
+  Public so the RTG proposal-merge path
+  (:mod:`Backend.CustomerOrders.ProposalMerge`) can wire the real
+  customer onto both the seeded template AND the customer's fresh CO
+  — the proposal-merge payload from vita-cff now carries
+  ``customer_uuid`` / ``customer_display_name`` for exactly this
+  reason (RTG formulations have no ``formulation.customer`` at
+  save-version time, so the RTG COs used to inherit the placeholder
+  forever).
+  """
+  def resolve_customer(company_id, placeholder, params) do
     display = sanitize(params["customer_display_name"] || params[:customer_display_name])
     uuid = sanitize(params["customer_uuid"] || params[:customer_uuid])
 
