@@ -35,6 +35,13 @@ export interface Equipment {
   maintenance_frequency_months: number | null;
   last_maintenance_at: string | null;
   next_maintenance_at: string | null;
+  /** Cleaning cadence (new fields). Auditor-distinct from the
+   *  workstation-level cleaning cadence — a machine can have its
+   *  own CIP schedule independent of the cell it lives in. */
+  cleaning_periodicity: string | null;
+  cleaning_periodicity_interval: number | null;
+  last_cleaning_at: string | null;
+  next_cleaning_due_at: string | null;
   retired_at: string | null;
   disposed_at: string | null;
   notes: string | null;

@@ -171,6 +171,38 @@ export async function listEquipmentCategories(opts?: {
   }
 }
 
+/** One form template's slim shape as returned inside a category
+ *  form-assignments payload. Enough for the FE picker + attached
+ *  list without a second round-trip. */
+export interface CategoryFormAssignment {
+  uuid: string;
+  slot: "equipment_cleaning" | "equipment_maintenance";
+  sort_order: number;
+  form_template: {
+    uuid: string;
+    name: string;
+    trigger: string;
+    version: number;
+    is_active: boolean;
+  } | null;
+}
+
+export async function listCategoryFormAssignments(
+  categoryUuid: string,
+): Promise<CategoryFormAssignment[]> {
+  const token = await getSessionToken();
+  if (!token) return [];
+  try {
+    const { items } = await api<{ items: CategoryFormAssignment[] }>(
+      `/api/equipment-categories/${encodeURIComponent(categoryUuid)}/form-assignments`,
+      { token, cache: "no-store" },
+    );
+    return items;
+  } catch {
+    return [];
+  }
+}
+
 export async function listEquipmentRepairs(
   uuid: string,
 ): Promise<EquipmentRepair[]> {

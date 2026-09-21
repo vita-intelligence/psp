@@ -616,6 +616,64 @@ export async function updateEquipmentCategoryAction(
   }
 }
 
+/** Result shape from replacing form assignments on one category. */
+export type CategoryFormAssignmentsResult =
+  | {
+      ok: true;
+      items: Array<{
+        uuid: string;
+        slot: "equipment_cleaning" | "equipment_maintenance";
+        sort_order: number;
+        form_template: {
+          uuid: string;
+          name: string;
+          trigger: string;
+          version: number;
+          is_active: boolean;
+        } | null;
+      }>;
+    }
+  | ErrorResult;
+
+/** Bulk-overwrite the form assignments on one equipment category.
+ *  Missing rows = detached. Server-side revalidates the settings
+ *  category page + broadcasts to every workstation carrying a
+ *  machine in this category so their kiosks pick up the change. */
+export async function replaceCategoryFormAssignmentsAction(
+  categoryUuid: string,
+  input: Array<{
+    form_template_uuid: string;
+    slot: "equipment_cleaning" | "equipment_maintenance";
+    sort_order?: number;
+  }>,
+): Promise<CategoryFormAssignmentsResult> {
+  const token = await getSessionToken();
+  if (!token) {
+    return unauthorizedResult("replaceCategoryFormAssignmentsAction");
+  }
+
+  try {
+    const res = await api<CategoryFormAssignmentsResult & { ok?: true }>(
+      `/api/equipment-categories/${encodeURIComponent(categoryUuid)}/form-assignments`,
+      {
+        method: "PUT",
+        token,
+        body: JSON.stringify({ assignments: input }),
+      },
+    );
+    revalidatePath(
+      `/settings/equipment-categories/${encodeURIComponent(categoryUuid)}`,
+    );
+    revalidatePath("/settings/equipment-categories");
+    return { ok: true, items: (res as { items: unknown[] }).items as never };
+  } catch (err) {
+    return toErrorResult(err, {
+      source: "replaceCategoryFormAssignmentsAction",
+      fallbackDetail: "Couldn't save the form assignments.",
+    });
+  }
+}
+
 export async function deleteEquipmentCategoryAction(
   uuid: string,
 ): Promise<CategoryResult> {

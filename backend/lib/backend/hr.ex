@@ -125,6 +125,36 @@ defmodule Backend.HR do
   end
 
   @doc """
+  Fetch one shift by its public UUID, scoped to `(company_id,
+  employee_uuid)`. Powers the shift-detail page — the FE knows
+  the employee via the route param already, so the double scope
+  keeps a hostile shift_uuid from leaking cross-worker data.
+
+  Returns `nil` when either UUID doesn't parse, the employee is
+  a stranger to the company, or the shift belongs to a different
+  worker. Controllers render a clean 404.
+  """
+  def get_employee_shift(company_id, employee_uuid, shift_uuid)
+      when is_binary(employee_uuid) and is_binary(shift_uuid) do
+    with {:ok, emp_cast} <- Ecto.UUID.cast(employee_uuid),
+         {:ok, shift_cast} <- Ecto.UUID.cast(shift_uuid) do
+      Repo.one(
+        from s in EmployeeShift,
+          join: e in assoc(s, :employee),
+          where:
+            s.company_id == ^company_id and
+              s.uuid == ^shift_cast and
+              e.uuid == ^emp_cast,
+          preload: [employee: e]
+      )
+    else
+      :error -> nil
+    end
+  end
+
+  def get_employee_shift(_company_id, _employee_uuid, _shift_uuid), do: nil
+
+  @doc """
   Active-only lookup, mostly for pickers. Kept behind the same
   paginated API so the mobile kiosk selector can stay simple.
   """

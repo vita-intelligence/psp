@@ -169,7 +169,14 @@ export function FormBuilder({
     setState((prev) => ({ ...prev, [key]: value }));
   }
 
-  const isCleaning = state.trigger === "cleaning";
+  // per_equipment_fields only apply to workstation-scoped cleaning
+  // or maintenance forms — the ones where the operator services
+  // the whole cell but each attached machine repeats a sub-checklist.
+  // Equipment-scoped triggers already target one machine so there's
+  // no expansion to do; workstation start/end triggers are not tied
+  // to a physical clean/service so per-machine sub-forms don't fit.
+  const supportsPerEquipmentFields =
+    state.trigger === "cleaning" || state.trigger === "maintenance";
   const canvas = activeTab === "per_equipment" ? "per_equipment_fields" : "fields";
   const activeFields = state[canvas];
 
@@ -208,7 +215,9 @@ export function FormBuilder({
 
     const schema: FormTemplateSchema = {
       fields: state.fields,
-      per_equipment_fields: isCleaning ? state.per_equipment_fields : null,
+      per_equipment_fields: supportsPerEquipmentFields
+        ? state.per_equipment_fields
+        : null,
     };
 
     const payload = {
@@ -313,6 +322,15 @@ export function FormBuilder({
                   <SelectItem value="cleaning">
                     {TRIGGER_LABELS.cleaning}
                   </SelectItem>
+                  <SelectItem value="maintenance">
+                    {TRIGGER_LABELS.maintenance}
+                  </SelectItem>
+                  <SelectItem value="equipment_cleaning">
+                    {TRIGGER_LABELS.equipment_cleaning}
+                  </SelectItem>
+                  <SelectItem value="equipment_maintenance">
+                    {TRIGGER_LABELS.equipment_maintenance}
+                  </SelectItem>
                 </SelectContent>
               </Select>
               {!!template && template.version > 1 && (
@@ -363,7 +381,7 @@ export function FormBuilder({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {isCleaning && (
+          {supportsPerEquipmentFields && (
             <div className="mb-4 space-y-2">
               <div className="inline-flex rounded-md border border-border/60 p-0.5">
                 <button

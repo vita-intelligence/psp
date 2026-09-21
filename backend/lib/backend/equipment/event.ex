@@ -21,7 +21,16 @@ defmodule Backend.Equipment.Event do
   # Event vocabulary. `note` is the free-form entry; all others
   # correspond to specific lifecycle transitions handled by the
   # Lifecycle module in a follow-up PR.
-  @kinds ~w(received in_service maintenance_started maintenance_completed
+  #
+  # ``cleaning_started`` / ``cleaning_completed`` and the (already
+  # present) ``maintenance_*`` pair are written when a kiosk
+  # cleaning / maintenance session on vita-perf targets a specific
+  # piece of equipment (not just its parent workstation). See
+  # ``BackendWeb.IntegrationSessionCompleteController`` for the
+  # inbound callback that writes them.
+  @kinds ~w(received in_service
+            maintenance_started maintenance_completed
+            cleaning_started cleaning_completed
             calibrated moved assigned unassigned retired disposed note)
 
   @actor_kinds ~w(user system)

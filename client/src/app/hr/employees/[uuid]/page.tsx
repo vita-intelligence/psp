@@ -153,7 +153,11 @@ export default async function HREmployeeDetailPage({
             canEdit={canEdit}
             viewAllHref={reputationViewAll}
           />
-          <ShiftsCard initial={shifts} viewAllHref={shiftsViewAll} />
+          <ShiftsCard
+            initial={shifts}
+            viewAllHref={shiftsViewAll}
+            employeeUuid={employee.uuid}
+          />
           <IdentityFacts employee={employee} prefs={prefs} />
           <AuditMetaSection
             inserted_at={employee.inserted_at}

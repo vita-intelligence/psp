@@ -289,7 +289,14 @@ export function EquipmentCategoriesEditor({ initial, canEdit }: Props) {
                     className={cat.is_active ? "" : "opacity-60"}
                   >
                     <TableCell className="max-w-[280px]">
-                      <div className="font-medium">{cat.name}</div>
+                      <a
+                        href={`/settings/equipment-categories/${encodeURIComponent(
+                          cat.uuid,
+                        )}`}
+                        className="font-medium underline-offset-2 hover:underline"
+                      >
+                        {cat.name}
+                      </a>
                       {cat.notes && (
                         <div className="mt-0.5 truncate text-xs text-muted-foreground">
                           {cat.notes}

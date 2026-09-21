@@ -10,7 +10,38 @@
 export type FormTrigger =
   | "workstation_start"
   | "workstation_end"
-  | "cleaning";
+  | "cleaning"
+  | "maintenance"
+  | "equipment_cleaning"
+  | "equipment_maintenance";
+
+/** Set of triggers whose forms attach to an equipment CATEGORY on
+ *  PSP (not a workstation). Equipment-scoped forms fire when an
+ *  operator picks a specific machine on a cleaning / maintenance
+ *  session — same audit split BRCGS auditors ask for.
+ *
+ *  Kept in sync with the Elixir side
+ *  (`Backend.Forms.FormTemplate.@equipment_scoped_triggers`) — grep
+ *  for `equipment_scoped_triggers` if you rename either. */
+export const EQUIPMENT_SCOPED_TRIGGERS: ReadonlySet<FormTrigger> = new Set([
+  "equipment_cleaning",
+  "equipment_maintenance",
+]);
+
+export function isEquipmentScopedTrigger(t: FormTrigger): boolean {
+  return EQUIPMENT_SCOPED_TRIGGERS.has(t);
+}
+
+/** Subset of triggers whose forms attach to a WORKSTATION (via
+ *  `WorkstationFormAssignment`). Equipment-scoped triggers are
+ *  excluded — those attach to equipment categories. Used by the
+ *  workstation-attachment form picker so its Record can typecheck
+ *  cleanly without needing to render pickers for the equipment
+ *  triggers. */
+export type WorkstationFormTrigger = Exclude<
+  FormTrigger,
+  "equipment_cleaning" | "equipment_maintenance"
+>;
 
 export type FormFieldType =
   | "text"
@@ -95,7 +126,10 @@ export interface FormTemplateSummary {
 export const TRIGGER_LABELS: Record<FormTrigger, string> = {
   workstation_start: "Workstation start",
   workstation_end: "Workstation end",
-  cleaning: "Cleaning",
+  cleaning: "Cleaning (workstation)",
+  maintenance: "Maintenance (workstation)",
+  equipment_cleaning: "Cleaning (equipment)",
+  equipment_maintenance: "Maintenance (equipment)",
 };
 
 export const TRIGGER_DESCRIPTIONS: Record<FormTrigger, string> = {
@@ -104,5 +138,11 @@ export const TRIGGER_DESCRIPTIONS: Record<FormTrigger, string> = {
   workstation_end:
     "Fires on the kiosk when a worker ends their job on this workstation (before the timer stops).",
   cleaning:
-    "Fires on the kiosk when a worker taps the Cleaning icon and picks this workstation. Attached-equipment sections auto-generate at publish time.",
+    "Fires when a worker taps Cleaning + picks this workstation — cleaning the cell itself. Attach this form on the workstation. Per-equipment sections auto-generate at publish time (see the field group below).",
+  maintenance:
+    "Fires when a worker taps Maintenance + picks this workstation — servicing the cell itself. Attach this form on the workstation. Same authoring shape as cleaning.",
+  equipment_cleaning:
+    "Fires when a worker scopes a cleaning session to a specific MACHINE (e.g. CIP the V-blender). Attach this form on an equipment CATEGORY — every machine in that category inherits it, so one checklist covers every V-blender in the plant.",
+  equipment_maintenance:
+    "Fires when a worker scopes a maintenance session to a specific MACHINE. Same authoring shape + attachment (equipment category) as equipment cleaning.",
 };

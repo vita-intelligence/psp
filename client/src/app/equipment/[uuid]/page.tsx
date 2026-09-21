@@ -10,6 +10,7 @@ import { CommentThread } from "@/components/comments/comment-thread";
 import { listCommentsForEntity } from "@/lib/comments/server";
 import {
   getEquipment,
+  listCategoryFormAssignments,
   listEquipmentEvents,
   listEquipmentFiles,
   listEquipmentMaintenanceTasks,
@@ -23,6 +24,8 @@ import { EquipmentFilesCard } from "./equipment-files-card";
 import { EquipmentMaintenanceTasksCard } from "./equipment-maintenance-tasks-card";
 import { EquipmentRepairsCard } from "./equipment-repairs-card";
 import { EquipmentRunningCostCard } from "./equipment-running-cost-card";
+import { EquipmentCleaningMaintenanceCard } from "./equipment-cleaning-maintenance-card";
+import { EquipmentInheritedFormsCard } from "./equipment-inherited-forms-card";
 
 export const metadata = { title: "Equipment · PSP" };
 export const dynamic = "force-dynamic";
@@ -54,6 +57,14 @@ export default async function EquipmentDetailPage({
   if (!prefs) notFound();
 
   const canAct = hasPermission(user, "equipment.act");
+
+  // Inherited kiosk forms — everything attached to this machine's
+  // equipment category fires on a cleaning / maintenance session
+  // that scopes to this specific machine. Read-only surface: the
+  // authoring / attachment happens on the category detail page.
+  const categoryFormAssignments = unit.category
+    ? await listCategoryFormAssignments(unit.category.uuid)
+    : [];
 
   return (
     <div className="flex flex-1 flex-col">
@@ -90,6 +101,17 @@ export default async function EquipmentDetailPage({
             canEdit={canAct}
             prefs={prefs}
             defaultCurrency={unit.currency ?? prefs.currency_code}
+          />
+
+          <EquipmentCleaningMaintenanceCard
+            equipment={unit}
+            events={events}
+            prefs={prefs}
+          />
+
+          <EquipmentInheritedFormsCard
+            category={unit.category}
+            assignments={categoryFormAssignments}
           />
 
           <EquipmentMaintenanceTasksCard

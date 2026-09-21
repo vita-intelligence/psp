@@ -46,7 +46,8 @@ defmodule BackendWeb.HREmployeeController do
               :list_all_shifts,
               :list_all_wages,
               :list_all_reputation_events,
-              :statistics_summary
+              :statistics_summary,
+              :show_shift_detail
             ]
 
   plug RequirePermission, "hr.create" when action in [:create]
@@ -311,6 +312,149 @@ defmodule BackendWeb.HREmployeeController do
           items: Enum.map(shifts, &Payloads.hr_employee_shift/1),
           next_cursor: next_cursor
         })
+    end
+  end
+
+  @doc """
+  Shift-detail proxy. PSP mirrors the shift envelope from vita-perf
+  on close, but the session-level timeline + dashboard counters
+  live on vp — this action calls vp's inbound endpoint with the
+  shared secret and hands the response body straight to the FE.
+
+  Route param `shift_uuid` is the PSP-side ``EmployeeShift.uuid``
+  (public identifier); ``external_id`` on that row is the vp
+  ``WorkerShift`` pk that vp keys off. Double-scoped by
+  `(company, employee_uuid)` so a hostile shift_uuid can never
+  leak another worker's detail through this endpoint.
+
+  Silent-degrade posture: vp being unreachable / mid-boot / on a
+  cold reload should surface as a specific error banner on the
+  FE, not a spinner-forever. Returns 502 with a machine slug
+  + human detail + debug string so `ErrorBanner` can render
+  the full triage bundle.
+  """
+  def show_shift_detail(conn, %{"hr_employee_id" => emp_uuid, "shift_uuid" => shift_uuid}) do
+    user = conn.assigns.current_user
+
+    case HR.get_employee_shift(user.company_id, emp_uuid, shift_uuid) do
+      nil ->
+        {:error, :not_found}
+
+      shift ->
+        case shift.external_id do
+          ext when is_binary(ext) and ext != "" ->
+            fetch_shift_detail_from_vitaperf(conn, shift, ext)
+
+          _ ->
+            require Logger
+
+            Logger.warning(
+              "shift_detail: EmployeeShift #{shift.uuid} has no external_id — cannot proxy to vita-perf"
+            )
+
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(
+              Errors.payload(
+                "shift_detail_no_external_id",
+                "This shift has no vita-perf linkage yet — nothing to render."
+              )
+            )
+        end
+    end
+  end
+
+  defp fetch_shift_detail_from_vitaperf(conn, _shift, external_id) do
+    require Logger
+
+    with {:ok, base_url} <- vitaperf_url(),
+         {:ok, token} <- vitaperf_token() do
+      request_url =
+        String.trim_trailing(base_url, "/") <>
+          "/api/kiosk/psp/shifts/" <> external_id <> "/detail/"
+
+      req =
+        Req.new(
+          url: request_url,
+          headers: [{"x-psp-publish-token", token}],
+          receive_timeout: 10_000
+        )
+
+      case Req.get(req) do
+        {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
+          json(conn, body)
+
+        {:ok, %Req.Response{status: 404}} ->
+          Logger.warning(
+            "shift_detail: vp returned 404 for external_id=#{external_id}"
+          )
+
+          conn
+          |> put_status(:not_found)
+          |> json(
+            Errors.payload(
+              "shift_detail_not_found_on_vitaperf",
+              "vita-perf couldn't find this shift — it may have been deleted or the linkage is stale."
+            )
+          )
+
+        {:ok, %Req.Response{status: status, body: body}} ->
+          Logger.error(
+            "shift_detail: vp returned status=#{status} body=#{inspect(body)}"
+          )
+
+          conn
+          |> put_status(:bad_gateway)
+          |> json(
+            Errors.payload(
+              "shift_detail_vitaperf_error",
+              "vita-perf returned an unexpected status while loading the shift timeline."
+            )
+          )
+
+        {:error, err} ->
+          Logger.error("shift_detail: vp unreachable — #{inspect(err)}")
+
+          conn
+          |> put_status(:bad_gateway)
+          |> json(
+            Errors.payload(
+              "shift_detail_vitaperf_unreachable",
+              "vita-perf is unreachable — the timeline can't render right now."
+            )
+          )
+      end
+    else
+      {:error, code, detail, debug} ->
+        Logger.error("shift_detail: config error — #{debug}")
+
+        conn
+        |> put_status(:service_unavailable)
+        |> json(Errors.payload(code, detail))
+    end
+  end
+
+  defp vitaperf_url do
+    case System.get_env("PSP_TO_VITAPERF_URL") do
+      url when is_binary(url) and url != "" ->
+        {:ok, url}
+
+      _ ->
+        {:error, "shift_detail_config_missing",
+         "PSP is not configured to reach vita-perf.",
+         "PSP_TO_VITAPERF_URL env var is unset"}
+    end
+  end
+
+  defp vitaperf_token do
+    case System.get_env("PSP_TO_VITAPERF_TOKEN") do
+      token when is_binary(token) and token != "" ->
+        {:ok, token}
+
+      _ ->
+        {:error, "shift_detail_config_missing",
+         "PSP is not configured with a vita-perf shared secret.",
+         "PSP_TO_VITAPERF_TOKEN env var is unset"}
     end
   end
 

@@ -285,8 +285,31 @@ defmodule Backend.Equipment do
             Repo.rollback(reason)
         end
       end)
+      |> tap(&maybe_publish_equipment_sync/1)
     end
   end
+
+  # After a successful equipment create, publish the workstation's
+  # equipment roster + forms to vita-perf so the kiosk equipment
+  # picker renders the new unit AND its category's forms fire on
+  # the next cleaning / maintenance session against this machine.
+  # Fire-and-forget — the publishers do their own logging. Nothing
+  # to do when the create failed or the equipment isn't attached
+  # to a workstation.
+  defp maybe_publish_equipment_sync({:ok, %Equipment{workstation_id: ws_id}})
+       when is_integer(ws_id) do
+    case Repo.get(Backend.Production.Workstation, ws_id) do
+      nil ->
+        :ok
+
+      ws ->
+        Backend.Production.WorkstationEquipmentPublisher.publish_workstation(ws)
+        Backend.Forms.Publisher.publish_workstation(ws)
+        :ok
+    end
+  end
+
+  defp maybe_publish_equipment_sync(_), do: :ok
 
   @doc """
   Public lifecycle-event entry point. Thin wrapper around
@@ -305,6 +328,21 @@ defmodule Backend.Equipment do
           updated.company_id,
           kind
         )
+
+        # Terminal transitions (retire, dispose) + any event that
+        # could affect workstation attachment need to re-sync the
+        # vp mirror so the kiosk equipment picker drops the unit
+        # and its category's forms detach.
+        if kind in ~w(retired disposed) and equipment.workstation_id do
+          case Repo.get(Backend.Production.Workstation, equipment.workstation_id) do
+            nil ->
+              :ok
+
+            ws ->
+              Backend.Production.WorkstationEquipmentPublisher.publish_workstation(ws)
+              Backend.Forms.Publisher.publish_workstation(ws)
+          end
+        end
 
         {:ok,
          Repo.preload(updated, [

@@ -50,7 +50,11 @@ defmodule Backend.Forms.Publisher do
 
   # PSP trigger enum maps 1:1 to what vita-perf's publish endpoint
   # expects (with `cleaning` added there in migration 0002).
-  @valid_triggers ~w(workstation_start workstation_end cleaning)
+  @valid_triggers ~w(
+    workstation_start workstation_end
+    cleaning maintenance
+    equipment_cleaning equipment_maintenance
+  )
 
   @doc """
   Fire-and-forget publish for `template` across every workstation it
@@ -141,11 +145,27 @@ defmodule Backend.Forms.Publisher do
   end
 
   defp do_publish_workstation(%Workstation{} = ws) do
-    ws = Repo.preload(ws, [form_assignments: :form_template, equipment: :item])
+    ws =
+      Repo.preload(ws, [
+        {:form_assignments, :form_template},
+        {:equipment, [:item, category: [form_assignments: :form_template]]}
+      ])
 
-    ws.form_assignments
-    |> Enum.reject(fn a -> is_nil(a.form_template) end)
-    |> Enum.map(fn a -> push_one(a.form_template, ws, a.sort_order) end)
+    # 1. Workstation-scoped forms — one push per assignment.
+    ws_results =
+      ws.form_assignments
+      |> Enum.reject(fn a -> is_nil(a.form_template) end)
+      |> Enum.map(fn a -> push_one(a.form_template, ws, a.sort_order) end)
+
+    # 2. Equipment-scoped forms — for every active machine on this
+    #    workstation, walk its category's form assignments and push
+    #    each one keyed by the machine's uuid.
+    eq_results =
+      ws.equipment
+      |> Enum.filter(fn e -> e.status not in ["retired", "disposed", "canceled"] end)
+      |> Enum.flat_map(&resolve_equipment_form_pushes(&1, ws))
+
+    (ws_results ++ eq_results)
     |> Enum.find(&(&1 != :ok))
     |> case do
       nil -> :ok
@@ -153,15 +173,57 @@ defmodule Backend.Forms.Publisher do
     end
   end
 
-  # One HTTP call for one (template × workstation) pair.
-  defp push_one(template, ws, sort_order \\ 0)
+  # Return the list of push results for one equipment unit. Each
+  # push includes the equipment_uuid so vp keys the mirror row on
+  # (workstation, equipment, trigger) instead of just (workstation,
+  # trigger).
+  defp resolve_equipment_form_pushes(equipment, %Workstation{} = ws) do
+    case equipment.category do
+      %Backend.Equipment.Category{form_assignments: assignments}
+      when is_list(assignments) ->
+        assignments
+        |> Enum.reject(fn a -> is_nil(a.form_template) end)
+        |> Enum.map(fn a ->
+          push_one(a.form_template, ws, a.sort_order, equipment: equipment)
+        end)
 
-  defp push_one(%FormTemplate{trigger: trigger} = template, %Workstation{} = ws, sort_order)
+      _ ->
+        []
+    end
+  end
+
+  # One HTTP call for one (template × workstation × maybe-equipment)
+  # tuple. Workstation-scoped forms omit ``equipment_uuid`` in the
+  # payload; equipment-scoped forms set it so the vp mirror keys on
+  # (workstation, equipment, trigger) and the kiosk pulls the right
+  # forms per session scope.
+  defp push_one(template, ws), do: push_one(template, ws, 0, [])
+  defp push_one(template, ws, sort_order), do: push_one(template, ws, sort_order, [])
+
+  defp push_one(
+         %FormTemplate{trigger: trigger} = template,
+         %Workstation{} = ws,
+         sort_order,
+         opts
+       )
        when trigger in @valid_triggers do
     with {:ok, url} <- fetch_url(),
          {:ok, token} <- fetch_token() do
       ws = Repo.preload(ws, equipment: :item)
-      resolved = Resolver.resolve(template, ws)
+      equipment = Keyword.get(opts, :equipment)
+
+      # Equipment-scoped forms are already targeted at one machine;
+      # per_equipment_fields expansion doesn't apply. Fall through
+      # to the simple `fields` list. Workstation-scoped forms still
+      # use the Resolver to expand equipment sections at publish
+      # time.
+      resolved =
+        if FormTemplate.equipment_scoped?(trigger) do
+          fields = Map.get(template.schema || %{}, "fields", [])
+          if is_list(fields), do: fields, else: []
+        else
+          Resolver.resolve(template, ws)
+        end
 
       payload = %{
         "psp_uuid" => template.uuid,
@@ -175,17 +237,60 @@ defmodule Backend.Forms.Publisher do
         # and enforces on inject.
         "worker_uuids" => template.worker_uuids || [],
         "workstation_external_id" => ws.uuid,
+        "equipment_uuid" =>
+          case equipment do
+            %Backend.Equipment.Equipment{uuid: uuid} -> uuid
+            _ -> nil
+          end,
         "sort_order" => sort_order || 0
       }
 
       payload =
-        if trigger == "cleaning" do
-          Map.put(payload, "workstation_cleaning_schedule", %{
-            "last_cleaning_at" => encode_datetime(ws.last_cleaning_at),
-            "next_cleaning_due_at" => encode_date(ws.next_cleaning_due_at)
-          })
-        else
-          payload
+        cond do
+          trigger == "cleaning" ->
+            Map.put(payload, "workstation_cleaning_schedule", %{
+              "last_cleaning_at" => encode_datetime(ws.last_cleaning_at),
+              "next_cleaning_due_at" => encode_date(ws.next_cleaning_due_at)
+            })
+
+          trigger == "maintenance" ->
+            Map.put(payload, "workstation_maintenance_schedule", %{
+              "last_maintenance_at" => encode_datetime(ws.last_maintenance_at),
+              "next_maintenance_due_at" => encode_date(ws.next_maintenance_due_at)
+            })
+
+          trigger == "equipment_cleaning" ->
+            case equipment do
+              %Backend.Equipment.Equipment{
+                last_cleaning_at: last_at,
+                next_cleaning_due_at: next_due
+              } ->
+                Map.put(payload, "equipment_cleaning_schedule", %{
+                  "last_cleaning_at" => encode_datetime(last_at),
+                  "next_cleaning_due_at" => encode_date(next_due)
+                })
+
+              _ ->
+                payload
+            end
+
+          trigger == "equipment_maintenance" ->
+            case equipment do
+              %Backend.Equipment.Equipment{
+                last_maintenance_at: last_at,
+                next_maintenance_at: next_due
+              } ->
+                Map.put(payload, "equipment_maintenance_schedule", %{
+                  "last_maintenance_at" => encode_datetime(last_at),
+                  "next_maintenance_at" => encode_datetime(next_due)
+                })
+
+              _ ->
+                payload
+            end
+
+          true ->
+            payload
         end
 
       request_url = String.trim_trailing(url, "/") <> "/api/dynamic-forms/publish/"

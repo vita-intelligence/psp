@@ -18,6 +18,7 @@ import { AuditHistoryCard } from "@/components/audit/audit-history-card";
 import { ProductionSubnav } from "../../production-subnav";
 import { EditModeToggle } from "@/components/forms/edit-mode-toggle";
 import { WorkstationForm } from "../workstation-form";
+import { CleaningMaintenanceSection } from "./cleaning-maintenance-section";
 
 export const metadata = { title: "Workstation · Production · PSP" };
 
@@ -109,6 +110,12 @@ export default async function WorkstationDetailPage({ params }: Props) {
               formTemplates={formTemplates}
             />
           </EditModeToggle>
+
+          <CleaningMaintenanceSection
+            workstationUuid={ws.uuid}
+            workstationName={ws.name}
+            prefs={company}
+          />
 
           <section className="rounded-lg border border-border/60 bg-card p-5 shadow-sm">
             <header className="mb-3">

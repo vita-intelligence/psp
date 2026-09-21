@@ -42,10 +42,16 @@ interface Props {
 
 type TriggerFilter = "all" | FormTrigger;
 
-const TRIGGER_TONE: Record<FormTrigger, "sky" | "amber" | "emerald"> = {
+const TRIGGER_TONE: Record<
+  FormTrigger,
+  "sky" | "amber" | "emerald" | "indigo" | "muted" | "brand"
+> = {
   workstation_start: "sky",
   workstation_end: "amber",
   cleaning: "emerald",
+  maintenance: "indigo",
+  equipment_cleaning: "brand",
+  equipment_maintenance: "muted",
 };
 
 export function FormsTable({ initial, canEdit }: Props) {
@@ -134,7 +140,14 @@ export function FormsTable({ initial, canEdit }: Props) {
             <SelectItem value="all">All triggers</SelectItem>
             <SelectItem value="workstation_start">Workstation start</SelectItem>
             <SelectItem value="workstation_end">Workstation end</SelectItem>
-            <SelectItem value="cleaning">Cleaning</SelectItem>
+            <SelectItem value="cleaning">Cleaning (workstation)</SelectItem>
+            <SelectItem value="maintenance">Maintenance (workstation)</SelectItem>
+            <SelectItem value="equipment_cleaning">
+              Cleaning (equipment)
+            </SelectItem>
+            <SelectItem value="equipment_maintenance">
+              Maintenance (equipment)
+            </SelectItem>
           </SelectContent>
         </Select>
         <Button

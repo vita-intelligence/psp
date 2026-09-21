@@ -66,6 +66,16 @@ defmodule Backend.Equipment.Equipment do
     field :last_maintenance_at, :utc_datetime
     field :next_maintenance_at, :utc_datetime
 
+    # Cleaning cadence — parallel to maintenance. Auditor-distinct
+    # from the parent workstation's cleaning (cleaning the cell vs
+    # CIP'ing the machine on it). Uses the shared periodicity enum
+    # so ``compute_next_due`` math is common with workstation +
+    # maintenance-task cadence.
+    field :cleaning_periodicity, :string
+    field :cleaning_periodicity_interval, :integer
+    field :last_cleaning_at, :utc_datetime
+    field :next_cleaning_due_at, :date
+
     field :retired_at, :utc_datetime
     field :disposed_at, :utc_datetime
 
@@ -138,6 +148,10 @@ defmodule Backend.Equipment.Equipment do
       :maintenance_frequency_months,
       :last_maintenance_at,
       :next_maintenance_at,
+      :cleaning_periodicity,
+      :cleaning_periodicity_interval,
+      :last_cleaning_at,
+      :next_cleaning_due_at,
       :notes,
       :location_description,
       :hourly_running_cost,
@@ -193,6 +207,8 @@ defmodule Backend.Equipment.Equipment do
       :useful_life_years,
       :calibration_frequency_months,
       :maintenance_frequency_months,
+      :cleaning_periodicity,
+      :cleaning_periodicity_interval,
       :notes,
       :location_description,
       :current_cell_id,
@@ -213,6 +229,10 @@ defmodule Backend.Equipment.Equipment do
       greater_than: 0,
       less_than_or_equal_to: 120
     )
+    |> validate_inclusion(:cleaning_periodicity,
+      [nil | Backend.Production.Workstation.cleaning_periodicities()]
+    )
+    |> validate_number(:cleaning_periodicity_interval, greater_than: 0)
   end
 
   @doc """

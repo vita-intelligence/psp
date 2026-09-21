@@ -957,6 +957,11 @@ defmodule Backend.Production do
           # reflects fresh cadence / assignment / equipment list.
           # Silent-degrade: publisher logs its own errors.
           Backend.Forms.Publisher.publish_workstation(ws)
+          # Publish the workstation's active equipment roster so
+          # the kiosk equipment picker on cleaning / maintenance
+          # sessions renders the current set. Fire-and-forget with
+          # silent degrade — the publisher logs its own errors.
+          Backend.Production.WorkstationEquipmentPublisher.publish_workstation(ws)
           {:ok, reload_workstation(ws)}
 
         other ->
@@ -1109,7 +1114,9 @@ defmodule Backend.Production do
       is_active: ws.is_active,
       external_id: ws.external_id,
       cleaning_periodicity: ws.cleaning_periodicity,
-      cleaning_periodicity_interval: ws.cleaning_periodicity_interval
+      cleaning_periodicity_interval: ws.cleaning_periodicity_interval,
+      maintenance_periodicity: ws.maintenance_periodicity,
+      maintenance_periodicity_interval: ws.maintenance_periodicity_interval
     }
   end
 

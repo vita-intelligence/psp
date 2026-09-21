@@ -469,6 +469,13 @@ defmodule BackendWeb.Router do
       # shift on close, PSP mirrors, this endpoint serves the profile
       # page's ShiftsCard + the day-overview picker.
       get "/shifts", HREmployeeController, :list_shifts
+
+      # Shift-detail proxy. PSP mirrors the shift envelope on close
+      # but session-level detail lives on vita-perf — this endpoint
+      # calls vp's inbound psp-shifts endpoint with the shared
+      # secret and hands the body straight to the FE. Feeds the
+      # /hr/employees/<uuid>/shifts/<shift_uuid> detail page.
+      get "/shifts/:shift_uuid/detail", HREmployeeController, :show_shift_detail
     end
 
     # Company-wide shifts feed. Powers the /hr/shifts overview page —
@@ -888,6 +895,21 @@ defmodule BackendWeb.Router do
       post "/workstations", WorkstationController, :create
       patch "/workstations/:id", WorkstationController, :update
       delete "/workstations/:id", WorkstationController, :delete
+
+      # Cleaning + maintenance audit log for the workstation. Read-only,
+      # paginated, filterable by kind. Feeds the "Cleaning &
+      # Maintenance" section on the workstation detail page.
+      get "/workstations/:workstation_id/events",
+          WorkstationEventController,
+          :index
+
+      # Company-wide overdue cleaning + maintenance summary. Feeds
+      # the dashboard widget. Cheap read; returns four buckets
+      # (workstation cleaning/maintenance + equipment cleaning/
+      # maintenance) with counts + top-5 preview rows.
+      get "/compliance-overview",
+          ComplianceOverviewController,
+          :show
 
       # /machines routes retired — physical assets are now Equipment
       # rows with an optional workstation_id. See /api/equipment.
@@ -1491,6 +1513,17 @@ defmodule BackendWeb.Router do
       post "/", EquipmentCategoryController, :create
       patch "/:id", EquipmentCategoryController, :update
       delete "/:id", EquipmentCategoryController, :delete
+
+      # Form assignments on the category. GET lists, PUT overwrites.
+      # Powers the "which cleaning + maintenance checklists run on
+      # every machine in this category" section.
+      get "/:id/form-assignments",
+          EquipmentCategoryController,
+          :list_form_assignments
+
+      put "/:id/form-assignments",
+          EquipmentCategoryController,
+          :replace_form_assignments
     end
 
     # Form templates — checklists authored in PSP and pushed to the
@@ -2285,6 +2318,12 @@ defmodule BackendWeb.Router do
     # Cleaning-complete callback from vita-perf's personal kiosk.
     # Updates cleaning schedule cache + drops per-equipment audit
     # events. Requires `workstation:write:cleaning`.
+    #
+    # LEGACY endpoint — new vita-perf builds POST to the unified
+    # session-complete endpoint below (which handles both cleaning
+    # + maintenance + optional equipment scoping). Kept alive as
+    # a backward-compat shim until every vita-perf deploy is on
+    # the new callback path.
     post "/workstations/:uuid/cleaning-complete",
          IntegrationCleaningController,
          :complete
@@ -2293,6 +2332,19 @@ defmodule BackendWeb.Router do
     post "/workstations/:uuid/cleaning-complete/",
          IntegrationCleaningController,
          :complete
+
+    # Unified session-complete callback — handles cleaning AND
+    # maintenance, workstation-scoped OR equipment-scoped. Payload
+    # `kind` picks the audit table; `equipment_uuid` picks the
+    # scope. Same auth scope (`workstation:write:cleaning`) as the
+    # legacy endpoint.
+    post "/workstations/:uuid/session-complete",
+         IntegrationSessionCompleteController,
+         :session_complete
+
+    post "/workstations/:uuid/session-complete/",
+         IntegrationSessionCompleteController,
+         :session_complete
 
     # QC-note callback from vita-perf's Live-QC kiosk page.
     # Records the operator's inspection note as a `note_added` event

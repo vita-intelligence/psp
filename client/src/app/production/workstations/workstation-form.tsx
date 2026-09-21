@@ -70,7 +70,11 @@ import {
 } from "@/lib/production/actions";
 import type { Workstation } from "@/lib/production/types";
 import type { Equipment } from "@/lib/equipment/types";
-import type { FormTemplate, FormTrigger } from "@/lib/forms/types";
+import type {
+  FormTemplate,
+  FormTrigger,
+  WorkstationFormTrigger,
+} from "@/lib/forms/types";
 import { TRIGGER_LABELS } from "@/lib/forms/types";
 import { formatCompanyMoney } from "@/lib/format/company";
 import { useEntityChannel } from "@/lib/realtime/use-entity-channel";
@@ -128,6 +132,7 @@ interface FormState {
     workstation_start: string[];
     workstation_end: string[];
     cleaning: string[];
+    maintenance: string[];
   };
   cleaning_periodicity: CleaningPeriodicity;
   cleaning_periodicity_interval: string;
@@ -155,6 +160,7 @@ function initialFrom(
     workstation_start: [] as string[],
     workstation_end: [] as string[],
     cleaning: [] as string[],
+    maintenance: [] as string[],
   };
 
   if (!ws) {
@@ -1176,20 +1182,31 @@ function FormAssignmentsSection({
   lastCleaningAt,
   nextCleaningDueAt,
 }: FormAssignmentsSectionProps) {
+  // Only workstation-scoped triggers are attachable here — the two
+  // equipment-scoped triggers attach to equipment categories, not
+  // workstations. `WorkstationFormTrigger` excludes them so the
+  // Record + form_assignments state stay tight.
   const byTrigger = useMemo(() => {
-    const m: Record<FormTrigger, FormTemplate[]> = {
+    const m: Record<WorkstationFormTrigger, FormTemplate[]> = {
       workstation_start: [],
       workstation_end: [],
       cleaning: [],
+      maintenance: [],
     };
     for (const t of templates) {
-      if (t.is_active) m[t.trigger].push(t);
+      if (
+        t.is_active &&
+        t.trigger !== "equipment_cleaning" &&
+        t.trigger !== "equipment_maintenance"
+      ) {
+        m[t.trigger as WorkstationFormTrigger].push(t);
+      }
     }
     return m;
   }, [templates]);
 
   function renderMultiPicker(
-    trigger: FormTrigger,
+    trigger: WorkstationFormTrigger,
     label: string,
     description: string,
   ) {

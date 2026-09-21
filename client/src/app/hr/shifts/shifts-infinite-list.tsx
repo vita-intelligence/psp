@@ -79,20 +79,26 @@ export function ShiftsInfiniteList({
               <th className="py-2 pr-3 font-semibold">Clock in</th>
               <th className="py-2 pr-3 font-semibold">Clock out</th>
               <th className="py-2 pr-3 font-semibold">Duration</th>
-              <th className="py-2 font-semibold">Status</th>
+              <th className="py-2 pr-3 font-semibold">Status</th>
+              <th className="py-2 font-semibold text-right">Detail</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border/40">
             {items.map((s) => {
               const open = s.ended_at === null;
               const name = s.employee?.name ?? "—";
-              const href = s.employee ? `/hr/employees/${s.employee.uuid}` : null;
+              const employeeHref = s.employee
+                ? `/hr/employees/${s.employee.uuid}`
+                : null;
+              const detailHref = s.employee
+                ? `/hr/employees/${s.employee.uuid}/shifts/${s.uuid}`
+                : null;
               return (
                 <tr key={s.uuid}>
                   <td className="py-2 pr-3">
-                    {href ? (
+                    {employeeHref ? (
                       <Link
-                        href={href}
+                        href={employeeHref}
                         className="font-medium underline-offset-2 hover:underline"
                       >
                         {name}
@@ -120,7 +126,7 @@ export function ShiftsInfiniteList({
                       formatDurationSeconds(s.duration_seconds)
                     )}
                   </td>
-                  <td className="py-2">
+                  <td className="py-2 pr-3">
                     {open ? (
                       <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
                         <span
@@ -132,6 +138,20 @@ export function ShiftsInfiniteList({
                     ) : (
                       <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                         Completed
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-2 text-right">
+                    {detailHref ? (
+                      <Link
+                        href={detailHref}
+                        className="text-[11px] font-medium text-primary underline-offset-2 hover:underline"
+                      >
+                        View →
+                      </Link>
+                    ) : (
+                      <span className="text-[11px] text-muted-foreground">
+                        —
                       </span>
                     )}
                   </td>

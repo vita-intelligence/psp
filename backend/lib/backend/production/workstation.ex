@@ -27,11 +27,14 @@ defmodule Backend.Production.Workstation do
   alias Backend.Production.{WorkstationDefaultWorker, WorkstationGroup}
   alias Backend.Warehouses.Warehouse
 
-  # Cleaning cadence enum mirrors the maintenance-task periodicity
-  # list so both features can share `compute_next_due` math.
+  # Cleaning + maintenance cadence share the same periodicity enum,
+  # which also matches the maintenance-task periodicity list so all
+  # three features can share `compute_next_due` math.
   @cleaning_periodicities ~w(daily weekly monthly quarterly half_yearly yearly two_yearly three_yearly)
+  @maintenance_periodicities @cleaning_periodicities
 
   def cleaning_periodicities, do: @cleaning_periodicities
+  def maintenance_periodicities, do: @maintenance_periodicities
 
   schema "workstations" do
     field :uuid, Ecto.UUID, autogenerate: true
@@ -81,6 +84,15 @@ defmodule Backend.Production.Workstation do
     field :last_cleaning_at, :utc_datetime
     field :next_cleaning_due_at, :date
 
+    # Maintenance schedule cadence — same shape as cleaning. Auditors
+    # ask about the two independently ("how often do you clean this
+    # cell" vs "how often do you maintain this cell") so the fields
+    # are parallel, not a shared cadence.
+    field :maintenance_periodicity, :string
+    field :maintenance_periodicity_interval, :integer
+    field :last_maintenance_at, :utc_datetime
+    field :next_maintenance_due_at, :date
+
     belongs_to :company, Company
     belongs_to :workstation_group, WorkstationGroup
     belongs_to :warehouse, Warehouse
@@ -124,6 +136,10 @@ defmodule Backend.Production.Workstation do
     cleaning_periodicity_interval
     last_cleaning_at
     next_cleaning_due_at
+    maintenance_periodicity
+    maintenance_periodicity_interval
+    last_maintenance_at
+    next_maintenance_due_at
     created_by_id updated_by_id
   )a
 
@@ -139,6 +155,8 @@ defmodule Backend.Production.Workstation do
     |> validate_idle_window()
     |> validate_inclusion(:cleaning_periodicity, [nil | @cleaning_periodicities])
     |> validate_number(:cleaning_periodicity_interval, greater_than: 0)
+    |> validate_inclusion(:maintenance_periodicity, [nil | @maintenance_periodicities])
+    |> validate_number(:maintenance_periodicity_interval, greater_than: 0)
     |> trim_name()
     |> assoc_constraint(:company)
     |> assoc_constraint(:workstation_group)

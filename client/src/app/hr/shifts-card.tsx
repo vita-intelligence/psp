@@ -19,6 +19,9 @@ interface Props {
   /** Optional "View all →" link when the backend indicated more rows
    *  exist beyond the sidebar preview. */
   viewAllHref?: string;
+  /** Employee uuid — required to build the per-row shift-detail link.
+   *  Omit only on legacy call sites that pre-dated the detail page. */
+  employeeUuid?: string;
 }
 
 function formatClock(iso: string | null | undefined): string {
@@ -44,7 +47,7 @@ function formatDurationSeconds(seconds: number | null): string {
  * Open shifts show a live-updating timer so a supervisor viewing the
  * profile mid-shift sees the running counter tick up.
  */
-export function ShiftsCard({ initial, viewAllHref }: Props) {
+export function ShiftsCard({ initial, viewAllHref, employeeUuid }: Props) {
   const prefs = useFormatPrefs();
 
   return (
@@ -81,12 +84,24 @@ export function ShiftsCard({ initial, viewAllHref }: Props) {
           <ul className="divide-y divide-border/40">
             {initial.map((s) => {
               const open = s.ended_at === null;
+              const detailHref = employeeUuid
+                ? `/hr/employees/${employeeUuid}/shifts/${s.uuid}`
+                : null;
               return (
                 <li key={s.uuid} className="py-2.5 first:pt-0 last:pb-0">
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <span className="text-xs font-medium">
-                      {formatCompanyDate(s.started_at, prefs)}
-                    </span>
+                    {detailHref ? (
+                      <Link
+                        href={detailHref}
+                        className="text-xs font-medium underline-offset-2 hover:underline"
+                      >
+                        {formatCompanyDate(s.started_at, prefs)}
+                      </Link>
+                    ) : (
+                      <span className="text-xs font-medium">
+                        {formatCompanyDate(s.started_at, prefs)}
+                      </span>
+                    )}
                     <span
                       className={
                         open

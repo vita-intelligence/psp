@@ -29,6 +29,14 @@ defmodule Backend.Equipment.Category do
     belongs_to :created_by, User
     belongs_to :updated_by, User
 
+    # Form templates attached to every equipment in this category.
+    # Kiosk pulls these on an equipment-scoped cleaning / maintenance
+    # session so all V-blenders share one CIP checklist.
+    has_many :form_assignments,
+             Backend.Equipment.CategoryFormAssignment,
+             foreign_key: :equipment_category_id,
+             preload_order: [asc: :slot, asc: :sort_order, asc: :id]
+
     timestamps(type: :utc_datetime)
   end
 

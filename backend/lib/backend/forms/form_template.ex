@@ -25,7 +25,33 @@ defmodule Backend.Forms.FormTemplate do
   alias Backend.Accounts.User
   alias Backend.Companies.Company
 
-  @triggers ~w(workstation_start workstation_end cleaning)
+  # Workstation-scoped triggers fire on sessions attached to a
+  # workstation (start / end / cleaning / maintenance of the cell
+  # itself). Equipment-scoped triggers fire on sessions targeting a
+  # specific machine — those forms attach to `EquipmentCategory` so
+  # one "V-blender CIP" checklist covers every V-blender.
+  #
+  # `per_equipment_fields` in the schema is only meaningful for
+  # workstation-scoped `cleaning` / `maintenance` triggers (see
+  # `validate_per_equipment_fields/1` below). Equipment-scoped forms
+  # ARE the equipment form — there's nothing to expand per-piece.
+  @triggers ~w(
+    workstation_start
+    workstation_end
+    cleaning
+    maintenance
+    equipment_cleaning
+    equipment_maintenance
+  )
+
+  @equipment_scoped_triggers ~w(equipment_cleaning equipment_maintenance)
+
+  def equipment_scoped_triggers, do: @equipment_scoped_triggers
+
+  def equipment_scoped?(trigger) when is_binary(trigger),
+    do: trigger in @equipment_scoped_triggers
+
+  def equipment_scoped?(_), do: false
 
   def triggers, do: @triggers
 
@@ -96,6 +122,8 @@ defmodule Backend.Forms.FormTemplate do
   # Enforce the two-arm shape at the changeset layer so downstream
   # consumers (publisher, kiosk) can trust the read model.
   defp validate_schema(cs) do
+    trigger = get_field(cs, :trigger)
+
     case get_field(cs, :schema) do
       nil ->
         add_error(cs, :schema, "must be a map")
@@ -110,6 +138,16 @@ defmodule Backend.Forms.FormTemplate do
 
           not (is_nil(per_eq) or is_list(per_eq)) ->
             add_error(cs, :schema, "`per_equipment_fields` must be a list or null")
+
+          equipment_scoped?(trigger) and is_list(per_eq) and per_eq != [] ->
+            # Equipment-scoped forms already target one machine —
+            # there's no cell to expand per-piece against. Reject
+            # per_equipment_fields to keep the model honest.
+            add_error(
+              cs,
+              :schema,
+              "`per_equipment_fields` is not applicable to equipment-scoped triggers; put the machine questions directly in `fields`"
+            )
 
           true ->
             cs

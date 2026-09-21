@@ -1,8 +1,10 @@
 import { requireUser } from "@/lib/auth/server";
+import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { UsersBoard } from "@/components/users/users-board";
 import { PresenceMount } from "@/components/realtime/presence-mount";
 import { ModuleGrid } from "./module-grid";
+import { ComplianceOverviewWidget } from "./compliance-overview-widget";
 
 export default async function HomePage() {
   const user = await requireUser();
@@ -27,6 +29,10 @@ export default async function HomePage() {
           </header>
 
           <ModuleGrid user={user} />
+
+          {hasPermission(user, "production.workstation_view") && (
+            <ComplianceOverviewWidget />
+          )}
 
           <section className="space-y-3">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">

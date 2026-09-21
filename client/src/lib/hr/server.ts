@@ -9,6 +9,7 @@ import type {
   HREmployeeShift,
   HREmployeeWage,
   HRStatisticsSummary,
+  ShiftDetail,
 } from "./types";
 
 /** First page of the HR employees ledger. Server components render this
@@ -107,6 +108,26 @@ export async function listHREmployeeShifts(
     return { items: data.items ?? [], next_cursor: data.next_cursor ?? null };
   } catch {
     return emptyPage<HREmployeeShift>();
+  }
+}
+
+/** Full shift-detail bundle proxied through PSP from vita-perf. Powers
+ *  the /hr/employees/<uuid>/shifts/<shift_uuid> detail page. Returns
+ *  `null` on transport failure so the RSC can render the 404 shell
+ *  instead of throwing on the paint pass. */
+export async function getShiftDetail(
+  employeeUuid: string,
+  shiftUuid: string,
+): Promise<ShiftDetail | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  try {
+    return await api<ShiftDetail>(
+      `/api/hr/employees/${encodeURIComponent(employeeUuid)}/shifts/${encodeURIComponent(shiftUuid)}/detail`,
+      { token, cache: "no-store" },
+    );
+  } catch {
+    return null;
   }
 }
 

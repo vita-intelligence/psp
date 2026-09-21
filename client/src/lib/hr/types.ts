@@ -109,6 +109,86 @@ export interface HREmployeeShift {
   updated_at: string;
 }
 
+/** Session-level activity kind — matches vp's `WorkSession.activity_kind`.
+ *  Drives the timeline row color + the dashboard breakdown card. */
+export type ShiftActivityKind =
+  | "cleaning"
+  | "mo"
+  | "maintenance"
+  | "other";
+
+/** One row on the shift-detail timeline — a single `WorkSession` on vp,
+ *  either production (mo) or cleaning / maintenance / other. Numeric
+ *  strings for quantities preserve BE decimal precision through JSON. */
+export interface ShiftDetailSession {
+  id: number;
+  activity_kind: ShiftActivityKind;
+  status: string;
+  workstation_id: number | null;
+  workstation_name: string | null;
+  item_id: number | null;
+  item_name: string | null;
+  mo_uuid: string | null;
+  /** What the timeline row should say. Cleaning sessions push their
+   *  ``override_task_name`` here; production falls back to item name. */
+  activity_label: string;
+  start_time: string | null;
+  end_time: string | null;
+  duration_seconds: number;
+  quantity_produced: string | null;
+  quantity_rejected: string | null;
+  performance_percentage: number | null;
+}
+
+export interface ShiftDetailSummary {
+  total_shift_seconds: number;
+  working_seconds: number;
+  idle_seconds: number;
+  by_activity_kind: Record<ShiftActivityKind, { count: number; seconds: number }>;
+  sessions_completed: number;
+  sessions_active: number;
+}
+
+export interface ShiftDetailReputationEvent {
+  id: number;
+  kind: string | null;
+  delta: number | null;
+  reason: string | null;
+  created_at: string;
+}
+
+export interface ShiftDetailRollingAverage {
+  window_days: number;
+  shifts_counted: number;
+  avg_working_seconds_per_shift: number;
+  avg_idle_seconds_per_shift: number;
+  avg_sessions_per_shift: number;
+}
+
+export interface ShiftDetailEnvelope {
+  id: number;
+  external_id: string | null;
+  worker_uuid: string | null;
+  worker_external_id: string | null;
+  worker_name: string | null;
+  clocked_in_at: string | null;
+  clocked_out_at: string | null;
+  duration_seconds: number;
+  is_open: boolean;
+  device_id: string | null;
+  notes: string | null;
+}
+
+/** Full shape returned by the shift-detail proxy — this is the vp
+ *  response body threaded through unchanged. */
+export interface ShiftDetail {
+  shift: ShiftDetailEnvelope;
+  sessions: ShiftDetailSession[];
+  summary: ShiftDetailSummary;
+  reputation_events: ShiftDetailReputationEvent[];
+  rolling_average: ShiftDetailRollingAverage;
+}
+
 /** Full employee payload — used by the detail page. */
 export interface HREmployee {
   id: number;
