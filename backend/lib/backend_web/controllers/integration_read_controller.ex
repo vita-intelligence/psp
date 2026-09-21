@@ -916,10 +916,15 @@ defmodule BackendWeb.IntegrationReadController do
   end
 
   @doc """
-  List active storage tags for the caller's company. NPD's Setup
-  tab uses these as a multi-select on the formulation's warehouse
-  identity — every finished-product item carries them so goods-in
-  can auto-route lots on receive.
+  List storage tags for the caller's company. NPD's Setup tab uses
+  these as a multi-select on the formulation's warehouse identity —
+  every finished-product item carries them so goods-in can auto-route
+  lots on receive.
+
+  Wire shape reflects the current `StorageTag` schema: `key` +
+  `label` are the identity+display pair (there is no `name` field
+  anymore, and no `color`/`is_active` — the schema was slimmed when
+  cell purposes became a first-class enum).
   """
   def list_storage_tags(conn, _params) do
     company_id = conn.assigns.current_company_id
@@ -927,8 +932,8 @@ defmodule BackendWeb.IntegrationReadController do
     tags =
       Repo.all(
         from t in StorageTag,
-          where: t.company_id == ^company_id and t.is_active == true,
-          order_by: t.name
+          where: t.company_id == ^company_id,
+          order_by: [asc: t.label]
       )
 
     json(conn, %{
@@ -936,8 +941,16 @@ defmodule BackendWeb.IntegrationReadController do
         Enum.map(tags, fn t ->
           %{
             uuid: t.uuid,
-            name: t.name,
-            color: t.color
+            # ``name`` is what NPD's Setup tab renders + stores on
+            # ``formulation.storage_tags``. Map from ``label`` so the
+            # existing FE contract keeps working; ``color`` no longer
+            # exists on the schema — kept nullable on the wire so
+            # downstream renders don't crash.
+            name: t.label,
+            color: nil,
+            key: t.key,
+            label: t.label,
+            kind: t.kind
           }
         end)
     })
