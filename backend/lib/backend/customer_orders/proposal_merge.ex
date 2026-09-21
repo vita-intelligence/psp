@@ -586,7 +586,18 @@ defmodule Backend.CustomerOrders.ProposalMerge do
         not is_nil(template) -> template
         is_reorder -> template
         true ->
-          seed_rtg_template!(company_id, primary_uuid, active_customer, params)
+          # Template CO gets the PLACEHOLDER customer, not the real
+          # one — the template is scaffolding that satisfies the
+          # ``rtg_fresh_merge`` template-lookup for every future
+          # order of this SKU. Stamping the first buyer's real
+          # customer here would (a) mislead the projects board
+          # (the template renders as if that customer had a second
+          # ongoing order) and (b) tangle audit trails when the
+          # NEXT buyer's fresh CO inherits template.customer_id
+          # via a code path that forgets to override it. Real
+          # customer identity lives on the customer's fresh CO
+          # below, which reads ``active_customer.id`` directly.
+          seed_rtg_template!(company_id, primary_uuid, placeholder, params)
       end
 
     if is_nil(template) do
@@ -724,15 +735,18 @@ defmodule Backend.CustomerOrders.ProposalMerge do
   defp seed_rtg_template!(
          company_id,
          npd_formulation_uuid,
-         %Backend.Customers.Customer{} = active_customer,
+         %Backend.Customers.Customer{} = template_customer,
          params
        ) do
+    # ``template_customer`` is expected to be the per-company "NPD
+    # Placeholder" customer — see the call site's comment for why
+    # the template must NOT carry the real buyer.
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
     attrs = %{
       company_id: company_id,
-      customer_id: active_customer.id,
-      currency_code: active_customer.currency_code || "GBP",
+      customer_id: template_customer.id,
+      currency_code: template_customer.currency_code || "GBP",
       status: "draft",
       sample_kind: false,
       is_reorder: false,

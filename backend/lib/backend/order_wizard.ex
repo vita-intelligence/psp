@@ -374,6 +374,19 @@ defmodule Backend.OrderWizard do
       # CO) have no ongoing story of their own — the primary carries
       # the state now. Hide them from every board view.
       where: is_nil(co.merged_into_id),
+      # RTG template scaffolding. ``rtg_fresh_merge`` in
+      # :mod:`Backend.CustomerOrders.ProposalMerge` seeds a
+      # placeholder-customer, no-proposal CO for each RTG SKU on
+      # its very first customer order so the template-lookup that
+      # every subsequent order performs finds a row to copy from.
+      # That scaffolding is technical, not a real project — it must
+      # never appear on the operator's board (would look like a
+      # ghost order for "NPD Placeholder"). Match: RTG project type
+      # AND no proposal identity yet.
+      where:
+        is_nil(co.npd_project_type) or
+          co.npd_project_type != "ready_to_go" or
+          not is_nil(co.npd_proposal_uuid),
       order_by: [asc: co.id]
     )
     |> Repo.all()
