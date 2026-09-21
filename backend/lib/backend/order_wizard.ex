@@ -381,12 +381,25 @@ defmodule Backend.OrderWizard do
       # every subsequent order performs finds a row to copy from.
       # That scaffolding is technical, not a real project — it must
       # never appear on the operator's board (would look like a
-      # ghost order for "NPD Placeholder"). Match: RTG project type
-      # AND no proposal identity yet.
+      # ghost order for "NPD Placeholder").
+      #
+      # Match ONLY the template shape:
+      #   * RTG project type
+      #   * no proposal identity yet
+      #   * ``sample_kind = false`` — crucial. RTG sample sub-COs
+      #     (spawned by the sample-payment sync via
+      #     ``NpdSync.upsert_sample_from_npd``) also carry
+      #     ``npd_project_type = "ready_to_go"`` AND no
+      #     ``npd_proposal_uuid`` (they map to a TrialBatch, not a
+      #     Proposal), so without this clause the filter would
+      #     silently hide every legitimate RTG sample order from
+      #     the operator's board. Templates always have
+      #     ``sample_kind = false`` (see ``seed_rtg_template!``).
       where:
         is_nil(co.npd_project_type) or
           co.npd_project_type != "ready_to_go" or
-          not is_nil(co.npd_proposal_uuid),
+          not is_nil(co.npd_proposal_uuid) or
+          co.sample_kind == true,
       order_by: [asc: co.id]
     )
     |> Repo.all()
