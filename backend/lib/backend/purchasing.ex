@@ -2195,7 +2195,13 @@ defmodule Backend.Purchasing do
                      if(Decimal.negative?(delta), do: nil, else: placement.storage_cell_id),
                    "delta_qty" => delta,
                    "kind" => kind,
-                   "reason" => "QC edit re-weighed the pack",
+                   "reason" =>
+                     "Goods-in QC re-weigh: pack qty adjusted by #{Decimal.to_string(delta)} vs delivered qty",
+                   # QC edit on goods-in is a count reconciliation
+                   # against what the vendor delivered — a variance,
+                   # not damage / expiry / QC fail. Same category as
+                   # the production preflight variance path.
+                   "reason_category" => "stock_take_variance",
                    "actor_id" => actor.id,
                    "occurred_at" => now
                  })

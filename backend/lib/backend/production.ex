@@ -8829,6 +8829,8 @@ defmodule Backend.Production do
     # drain's `take` IS the physical qty that moved, and the target
     # is the sum of every drain (which matches the lot's on-hand,
     # not booking.quantity).
+    mo_uuid = mo_uuid_for_booking(booking)
+
     Enum.reduce_while(drains, {:ok, nil}, fn %{placement: placement, take: take},
                                              _acc ->
       result =
@@ -8840,11 +8842,20 @@ defmodule Backend.Production do
           "to_cell_id" => target_cell.id,
           "delta_qty" => take,
           "kind" => "move",
+          # Warehouse → production-feed transfer is a location-only
+          # change (no qty delta on the lot), so ``physical_move`` is
+          # the auditor-facing category. Same default that
+          # Backend.Stock.insert_move_movement/7 uses for its move
+          # path — this emitter is documented as a mirror of that
+          # helper but historically forgot to set the reason fields.
+          "reason" =>
+            "Warehouse pickup — moved to production feed for MO #{mo_uuid} (booking #{booking.uuid})",
+          "reason_category" => "physical_move",
           "actor_id" => actor.id,
           "occurred_at" => now_dt,
           "photo_url" => photo_url,
           "reference_kind" => "manufacturing_order",
-          "reference_ref" => mo_uuid_for_booking(booking)
+          "reference_ref" => mo_uuid
         })
         |> Repo.insert()
 
@@ -10706,6 +10717,13 @@ defmodule Backend.Production do
                        "delta_qty" => Decimal.abs(delta),
                        "kind" => kind,
                        "reason" => reason,
+                       # QC operator re-weighed the finished lot and
+                       # the true qty differs from what production
+                       # recorded — that's a count variance discovered
+                       # at inspection time, not damage / expiry / QC
+                       # fail. Category applies to both adjust_up and
+                       # adjust_down: the variance can go either way.
+                       "reason_category" => "stock_take_variance",
                        "actor_id" => actor.id,
                        "occurred_at" => now_dt,
                        "reference_kind" => "lifecycle_event",
@@ -11116,6 +11134,10 @@ defmodule Backend.Production do
       "delta_qty" => reject_qty,
       "kind" => "adjust_down",
       "reason" => reason,
+      # The partial QC failure IS the reason this qty is leaving the
+      # parent lot — it's being split off into a child lot marked
+      # rejected. ``qc_fail`` is the auditor-facing classification.
+      "reason_category" => "qc_fail",
       "actor_id" => actor.id,
       "occurred_at" => now_dt,
       "reference_kind" => "lifecycle_event",
@@ -13417,6 +13439,11 @@ defmodule Backend.Production do
                 "delta_qty" => Decimal.abs(delta),
                 "kind" => kind,
                 "reason" => reason,
+                # Preflight is the operator re-weighing a booked lot
+                # before the MO actually starts — any delta is a
+                # count variance discovered at the bench vs what the
+                # booking snapshot said.
+                "reason_category" => "stock_take_variance",
                 "actor_id" => actor.id,
                 "occurred_at" => now_dt,
                 "reference_kind" => "manufacturing_order_booking",

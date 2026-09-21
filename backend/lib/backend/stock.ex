@@ -2046,7 +2046,14 @@ defmodule Backend.Stock do
                  "delta_qty" => delta,
                  "kind" => kind,
                  "reason" => attrs["reason"],
-                 "reason_category" => attrs["reason_category"],
+                 # Manual adjust is by definition a re-count vs the
+                 # last known qty (docstring: "no physical move
+                 # happened — qty just diverged from the last known
+                 # count"). Default to ``stock_take_variance`` when
+                 # the caller doesn't pass a category; FE can still
+                 # override with damage / expiry / theft_loss etc.
+                 "reason_category" =>
+                   attrs["reason_category"] || "stock_take_variance",
                  "actor_id" => actor.id,
                  "occurred_at" => now
                })
