@@ -466,7 +466,16 @@ defmodule Backend.CustomerOrders.NpdSync do
 
   # ----- Placeholder customer -------------------------------------
 
-  defp ensure_placeholder_customer(company_id) do
+  @doc """
+  Find-or-create the per-company "NPD Placeholder" customer.
+
+  Public so sibling paths (RTG proposal-merge template self-heal in
+  :mod:`Backend.CustomerOrders.ProposalMerge`) can reuse the same
+  placeholder — otherwise a duplicate customer with the same name
+  would be minted on every fresh-RTG-order path and clutter the
+  customer list.
+  """
+  def ensure_placeholder_customer(company_id) do
     case Repo.one(
            from c in Customer,
              where:

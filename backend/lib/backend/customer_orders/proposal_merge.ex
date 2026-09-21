@@ -545,6 +545,34 @@ defmodule Backend.CustomerOrders.ProposalMerge do
           nil
       end
 
+    # Self-heal on first-order-ever for an RTG SKU. Historically the
+    # template CO was seeded by ``Backend.CustomerOrders.NpdSync
+    # .upsert_from_npd`` on every ``save_version`` from NPD, so the
+    # merge always found one. Both sides now refuse to insert a CO
+    # for an RTG formulation via the formulation-sync path
+    # (``upsert_from_npd`` returns ``{:ok, nil}`` for RTG rows;
+    # vita-cff's ``sync_customer_order_to_psp`` also short-circuits
+    # for RTG until a LabelDesign exists — which itself only
+    # bootstraps AFTER this merge succeeds and the customer pays).
+    # So the merge is the ONLY entry point that can seed the first
+    # template — otherwise every fresh RTG SKU's first customer order
+    # dies with ``missing_formulation`` and the CO never appears on
+    # PSP's project board.
+    #
+    # We seed a minimal template inline using company defaults + the
+    # placeholder customer + the R&D team names already in the
+    # payload. Reorders don't hit this path — their template lookup
+    # ALWAYS resolves (either the reorder formulation itself or the
+    # source formulation via ``npd_source_formulation_uuid``).
+    is_reorder = params["npd_is_reorder"] == true
+
+    template =
+      cond do
+        not is_nil(template) -> template
+        is_reorder -> template
+        true -> seed_rtg_template!(company_id, primary_uuid, params)
+      end
+
     if is_nil(template) do
       Repo.rollback({:missing_formulation, primary_uuid})
     end
@@ -559,8 +587,8 @@ defmodule Backend.CustomerOrders.ProposalMerge do
     # the SKU's formulation uuid: RTG rows are excluded from that
     # unique index by the ``project_type <> 'ready_to_go'`` WHERE
     # clause, so sharing the uuid across N orders is legal there.
-    is_reorder = params["npd_is_reorder"] == true
-
+    # ``is_reorder`` was resolved above (used for the template
+    # self-heal branch too).
     formulation_uuid_for_new_co =
       if is_reorder do
         primary_uuid
@@ -625,6 +653,52 @@ defmodule Backend.CustomerOrders.ProposalMerge do
       {:error, reason} ->
         Repo.rollback(reason)
     end
+  end
+
+  # ---- RTG first-order template self-heal ------------------------
+
+  # Insert a minimal template CustomerOrder for an RTG SKU that has
+  # never been synced from NPD before. Called by ``rtg_fresh_merge``
+  # when the ``npd_formulation_uuid`` lookup returns nil. The seeded
+  # row satisfies the template-copy step above (currency + team
+  # names + placeholder customer FK) and is IMMEDIATELY consumed as
+  # the source ``template`` of the actual customer's fresh CO — it
+  # lives in the DB thereafter as the "template CO" every future
+  # order of the same SKU will find via the same lookup.
+  #
+  # Idempotent by ``npd_formulation_uuid``: the lookup above would
+  # already return it on a retry, so this path only ever fires on
+  # the SKU's very first customer order. Reorders never reach here
+  # (their template lookup always resolves via the source formulation
+  # uuid — see ``rtg_fresh_merge`` above).
+  defp seed_rtg_template!(company_id, npd_formulation_uuid, params) do
+    placeholder =
+      Backend.CustomerOrders.NpdSync.ensure_placeholder_customer(company_id)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    attrs = %{
+      company_id: company_id,
+      customer_id: placeholder.id,
+      currency_code: placeholder.currency_code || "GBP",
+      status: "draft",
+      sample_kind: false,
+      is_reorder: false,
+      npd_formulation_uuid: npd_formulation_uuid,
+      npd_project_type: "ready_to_go",
+      # Team names arrive on the proposal-merge payload — planting
+      # them here means the seeded row and every downstream CO
+      # carry the R&D lead + sales person from the very first order.
+      npd_lead_scientist_name: params["npd_lead_scientist_name"],
+      npd_sales_person_name: params["npd_sales_person_name"],
+      npd_app_url: params["npd_app_url"],
+      inserted_at: now,
+      updated_at: now
+    }
+
+    %CustomerOrder{}
+    |> Ecto.Changeset.change(attrs)
+    |> Repo.insert!()
   end
 
   # ---- absorb steps ----------------------------------------------
