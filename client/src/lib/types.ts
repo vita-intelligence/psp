@@ -3454,6 +3454,13 @@ export interface ProjectSummary {
     | null;
   blocker_count: number;
   line_count: number;
+  /** Total ordered qty summed across every CustomerOrderLine on
+   *  this CO — powers the "N units" chip on the projects board card
+   *  and the detail-page header. String because the backend
+   *  renders the tenant-wide 5 dp decimal precision (pharma
+   *  standard); the FE formats a whole-number display when the
+   *  value's fractional part is zero. */
+  total_qty_ordered: string;
   mo_count: number;
   lines_awaiting_mo: number;
   /** MOs whose placeholder-bookings include at least one PO still

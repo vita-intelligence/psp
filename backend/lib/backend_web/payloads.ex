@@ -1446,6 +1446,16 @@ defmodule BackendWeb.Payloads do
       next_action_cta: s.next_action_cta,
       blocker_count: s.blocker_count,
       line_count: s.line_count,
+      # Total ordered qty summed across every line. Powers the
+      # per-card / detail-page "N units" chip so operators see the
+      # production commitment at a glance without opening the order.
+      # Normalised to the tenant-wide 5 dp precision + stringified so
+      # the JSON round-trips exactly what the DB stores.
+      total_qty_ordered:
+        s
+        |> Map.get(:total_qty_ordered, Decimal.new(0))
+        |> normalise_qty_to_storage_precision()
+        |> decimal_to_string(),
       mo_count: s.mo_count,
       lines_awaiting_mo: s.lines_awaiting_mo,
       mos_with_placeholders: s.mos_with_placeholders,

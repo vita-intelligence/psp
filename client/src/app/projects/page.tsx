@@ -503,10 +503,16 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
       ) : null}
 
       {/* Project title — NPD formulation name for R&D, customer name
-          otherwise. */}
-      <h3 className="mt-0.5 truncate text-sm font-semibold tracking-tight">
-        {title}
-      </h3>
+          otherwise. Quantity chip sits inline to the right so an
+          operator can eyeball production commitment without opening
+          the order. Chip suppressed on zero-qty rows (draft R&D
+          projects with no lines yet). */}
+      <div className="mt-0.5 flex min-w-0 items-center gap-2">
+        <h3 className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight">
+          {title}
+        </h3>
+        <QuantityChip qtyOrdered={project.total_qty_ordered} />
+      </div>
 
       {/* Product name — sits under the customer title so an operator
           can tell a customer's orders apart at a glance. Without this
@@ -540,6 +546,32 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
     </Link>
   );
 }
+
+/** Compact quantity chip that renders next to the customer name on
+ *  each project card. Suppressed when the total is zero or unparsable
+ *  (draft R&D projects with no lines yet) so the header row doesn't
+ *  grow a "0 units" affordance that isn't actionable. Whole-number
+ *  totals render without a decimal tail; fractional totals keep the
+ *  raw string so pharma 5-dp precision survives.
+ */
+function QuantityChip({ qtyOrdered }: { qtyOrdered: string }) {
+  const raw = (qtyOrdered || "").trim();
+  if (!raw) return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  const display = Number.isInteger(parsed)
+    ? parsed.toLocaleString()
+    : raw.replace(/\.?0+$/, "");
+  return (
+    <span
+      title={`${raw} units to produce`}
+      className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground"
+    >
+      {display} units
+    </span>
+  );
+}
+
 
 function CardChips({ project }: { project: ProjectSummary }) {
   const chips: React.ReactNode[] = [];

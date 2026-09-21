@@ -409,6 +409,15 @@ defmodule Backend.OrderWizard do
       next_action_cta: snap.next_action && snap.next_action.primary_cta,
       blocker_count: length(snap.blockers),
       line_count: length(snap.lines),
+      # Total quantity ordered across every line — powers the "how
+      # many units does this project produce" chip on the projects
+      # board and the detail-page header. Sum stays a Decimal so
+      # the payload serialiser can render at the tenant-wide 5 dp
+      # quantity precision without a lossy int cast here.
+      total_qty_ordered:
+        snap.lines
+        |> Enum.map(&(&1.qty_ordered || Decimal.new(0)))
+        |> Enum.reduce(Decimal.new(0), &Decimal.add/2),
       mo_count: length(snap.mos),
       lines_awaiting_mo:
         Enum.count(snap.lines, fn line ->
