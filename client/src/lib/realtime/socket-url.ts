@@ -34,11 +34,15 @@ export function resolveSocketUrl(): string {
     const parsed = new URL(configured);
     const loopback =
       parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
-    // Rewrite whenever the configured host differs from the page
-    // origin — covers loopback misuse from a phone AND `.local`
-    // hostname misuse from a laptop.
-    const hostMismatch = parsed.hostname !== window.location.hostname;
-    if (!loopback && !hostMismatch) return configured;
+    const mdnsLocal = parsed.hostname.endsWith(".local");
+    // Rewrite only when the configured host is a *dev* address that
+    // won't work from the current page (loopback the phone can't hit,
+    // or an mDNS `.local` name whose cert won't match). In prod the
+    // backend and frontend are on genuinely different public
+    // hostnames (e.g. `sbx-psp-backend.*` vs `sbx-psp-frontend.*`),
+    // and we MUST NOT rewrite the WS URL to point at the frontend
+    // origin — Phoenix lives on the backend host.
+    if (!loopback && !mdnsLocal) return configured;
 
     // BE HTTPS listener lives on :4001 in dev. Mirror the same upgrade
     // protocol the page was loaded over (wss when https, ws when http)
