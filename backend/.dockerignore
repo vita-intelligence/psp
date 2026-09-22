@@ -1,0 +1,16 @@
+_build
+deps
+.git
+.gitignore
+.elixir_ls
+.iex.exs
+*.md
+!README.md
+priv/static/uploads
+priv/uploads
+tmp
+test
+cover
+doc
+Dockerfile
+.dockerignore

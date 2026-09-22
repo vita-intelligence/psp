@@ -1,6 +1,22 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Sandbox-only escape hatch — set NEXT_IGNORE_BUILD_ERRORS=true as
+  // a build arg in the sandbox Docker build so unrelated TS / lint
+  // drift doesn't block cutting a fresh sandbox image. Production
+  // builds never set the env var, so prod still fails hard on any
+  // TS or lint regression.
+  typescript: {
+    ignoreBuildErrors: process.env.NEXT_IGNORE_BUILD_ERRORS === "true",
+  },
+  eslint: {
+    ignoreDuringBuilds: process.env.NEXT_IGNORE_BUILD_ERRORS === "true",
+  },
+  // Standalone output ships a self-contained `.next/standalone/server.js`
+  // + traced node_modules so the Docker runtime image boots without the
+  // full monorepo checkout. Required by psp/client/Dockerfile.
+  output: "standalone",
+
   // pdfkit ships its standard-font `.afm` files as data assets that
   // Turbopack mis-bundles (it looks for them under `/ROOT/node_modules/…`
   // at runtime). Marking the package external keeps it loading
