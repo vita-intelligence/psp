@@ -23,12 +23,15 @@ interface Props {
  *  editing lives there so one CIP checklist covers every V-blender
  *  in the plant. */
 export function EquipmentInheritedFormsCard({ category, assignments }: Props) {
-  const cleaning = assignments
-    .filter((a) => a.slot === "equipment_cleaning" && a.form_template)
-    .sort((a, b) => a.sort_order - b.sort_order);
-  const maintenance = assignments
-    .filter((a) => a.slot === "equipment_maintenance" && a.form_template)
-    .sort((a, b) => a.sort_order - b.sort_order);
+  const bySlot = (slot: string) =>
+    assignments
+      .filter((a) => a.slot === slot && a.form_template)
+      .sort((a, b) => a.sort_order - b.sort_order);
+
+  const cleaningStart = bySlot("equipment_cleaning_start");
+  const cleaningEnd = bySlot("equipment_cleaning_end");
+  const maintenanceStart = bySlot("equipment_maintenance_start");
+  const maintenanceEnd = bySlot("equipment_maintenance_end");
 
   return (
     <Card className="border-border/60">
@@ -53,9 +56,10 @@ export function EquipmentInheritedFormsCard({ category, assignments }: Props) {
                 {category.name}
               </Link>{" "}
               category fires on this machine when an operator picks it
-              on a cleaning / maintenance session. Edit assignments on
-              the category page — one form covers every machine of the
-              same kind.
+              on a cleaning / maintenance session. Start forms fire
+              BEFORE the kiosk timer opens; end forms fire AFTER Stop.
+              Edit assignments on the category page — one form covers
+              every machine of the same kind.
             </>
           ) : (
             <>
@@ -68,14 +72,24 @@ export function EquipmentInheritedFormsCard({ category, assignments }: Props) {
       </CardHeader>
       <CardContent className="space-y-4">
         <SlotList
-          title="Cleaning (equipment)"
+          title="Cleaning · start"
           icon={<Sparkles className="size-3.5" aria-hidden />}
-          rows={cleaning}
+          rows={cleaningStart}
         />
         <SlotList
-          title="Maintenance (equipment)"
+          title="Cleaning · end"
+          icon={<Sparkles className="size-3.5" aria-hidden />}
+          rows={cleaningEnd}
+        />
+        <SlotList
+          title="Maintenance · start"
           icon={<Wrench className="size-3.5" aria-hidden />}
-          rows={maintenance}
+          rows={maintenanceStart}
+        />
+        <SlotList
+          title="Maintenance · end"
+          icon={<Wrench className="size-3.5" aria-hidden />}
+          rows={maintenanceEnd}
         />
       </CardContent>
     </Card>

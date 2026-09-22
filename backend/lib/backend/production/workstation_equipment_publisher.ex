@@ -54,8 +54,11 @@ defmodule Backend.Production.WorkstationEquipmentPublisher do
     end
   end
 
-  def publish_workstation(%Workstation{external_id: nil}), do: :noop
-
+  # NB: workstation ``external_id`` is legacy — vita-perf keys its
+  # local Workstation mirror off PSP's ``uuid``, not this column. So
+  # we always publish; if vp can't resolve the uuid (e.g. workstation
+  # not yet mirrored on that side), the sync endpoint returns 202
+  # and the roster catches up on the next re-fire.
   def publish_workstation(%Workstation{} = ws) do
     with {:ok, url} <- fetch_url(),
          {:ok, token} <- fetch_token() do

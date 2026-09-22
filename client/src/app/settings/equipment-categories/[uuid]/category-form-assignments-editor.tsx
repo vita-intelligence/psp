@@ -26,7 +26,11 @@ interface Props {
   canEdit: boolean;
 }
 
-type Slot = "equipment_cleaning" | "equipment_maintenance";
+type Slot =
+  | "equipment_cleaning_start"
+  | "equipment_cleaning_end"
+  | "equipment_maintenance_start"
+  | "equipment_maintenance_end";
 
 /** Slim shape the editor row renderer needs — just enough to
  *  identify the template + surface an archived-tag when the
@@ -44,9 +48,29 @@ interface Attached {
 }
 
 const SLOT_LABEL: Record<Slot, string> = {
-  equipment_cleaning: "Cleaning (equipment)",
-  equipment_maintenance: "Maintenance (equipment)",
+  equipment_cleaning_start: "Cleaning · start",
+  equipment_cleaning_end: "Cleaning · end",
+  equipment_maintenance_start: "Maintenance · start",
+  equipment_maintenance_end: "Maintenance · end",
 };
+
+const SLOT_SUBTITLE: Record<Slot, string> = {
+  equipment_cleaning_start:
+    "Fires BEFORE the timer opens on a cleaning session against a machine in this category — pre-cleaning verification.",
+  equipment_cleaning_end:
+    "Fires AFTER the operator taps Stop on a cleaning session against a machine in this category.",
+  equipment_maintenance_start:
+    "Fires BEFORE the timer opens on a maintenance session against a machine in this category.",
+  equipment_maintenance_end:
+    "Fires AFTER the operator taps Stop on a maintenance session against a machine in this category.",
+};
+
+const SLOT_ORDER: readonly Slot[] = [
+  "equipment_cleaning_start",
+  "equipment_cleaning_end",
+  "equipment_maintenance_start",
+  "equipment_maintenance_end",
+] as const;
 
 export function CategoryFormAssignmentsEditor({
   categoryUuid,
@@ -80,13 +104,19 @@ export function CategoryFormAssignmentsEditor({
   const [dirty, setDirty] = useState(false);
 
   const bySlot = useMemo(() => {
-    const cleaning = attached
-      .filter((a) => a.slot === "equipment_cleaning")
-      .sort((a, b) => a.sort_order - b.sort_order);
-    const maintenance = attached
-      .filter((a) => a.slot === "equipment_maintenance")
-      .sort((a, b) => a.sort_order - b.sort_order);
-    return { equipment_cleaning: cleaning, equipment_maintenance: maintenance };
+    const empty = {
+      equipment_cleaning_start: [] as Attached[],
+      equipment_cleaning_end: [] as Attached[],
+      equipment_maintenance_start: [] as Attached[],
+      equipment_maintenance_end: [] as Attached[],
+    };
+    for (const a of attached) {
+      empty[a.slot].push(a);
+    }
+    for (const key of SLOT_ORDER) {
+      empty[key].sort((a, b) => a.sort_order - b.sort_order);
+    }
+    return empty;
   }, [attached]);
 
   const attachedUuids = useMemo(
@@ -172,29 +202,20 @@ export function CategoryFormAssignmentsEditor({
         />
       )}
 
-      <SlotSection
-        title={SLOT_LABEL.equipment_cleaning}
-        subtitle="Fires when a worker picks a machine in this category on a cleaning session."
-        slot="equipment_cleaning"
-        rows={bySlot.equipment_cleaning}
-        available={availableFor("equipment_cleaning")}
-        onAttach={(uuid) => attach("equipment_cleaning", uuid)}
-        onDetach={detach}
-        onMove={(uuid, d) => move("equipment_cleaning", uuid, d)}
-        canEdit={canEdit}
-      />
-
-      <SlotSection
-        title={SLOT_LABEL.equipment_maintenance}
-        subtitle="Fires when a worker picks a machine in this category on a maintenance session."
-        slot="equipment_maintenance"
-        rows={bySlot.equipment_maintenance}
-        available={availableFor("equipment_maintenance")}
-        onAttach={(uuid) => attach("equipment_maintenance", uuid)}
-        onDetach={detach}
-        onMove={(uuid, d) => move("equipment_maintenance", uuid, d)}
-        canEdit={canEdit}
-      />
+      {SLOT_ORDER.map((slot) => (
+        <SlotSection
+          key={slot}
+          title={SLOT_LABEL[slot]}
+          subtitle={SLOT_SUBTITLE[slot]}
+          slot={slot}
+          rows={bySlot[slot]}
+          available={availableFor(slot)}
+          onAttach={(uuid) => attach(slot, uuid)}
+          onDetach={detach}
+          onMove={(uuid, d) => move(slot, uuid, d)}
+          canEdit={canEdit}
+        />
+      ))}
 
       {canEdit && (
         <div className="flex items-center gap-3 border-t border-border/60 pt-4">

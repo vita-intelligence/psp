@@ -31,20 +31,45 @@ defmodule Backend.Forms.FormTemplate do
   # specific machine — those forms attach to `EquipmentCategory` so
   # one "V-blender CIP" checklist covers every V-blender.
   #
-  # `per_equipment_fields` in the schema is only meaningful for
-  # workstation-scoped `cleaning` / `maintenance` triggers (see
-  # `validate_per_equipment_fields/1` below). Equipment-scoped forms
-  # ARE the equipment form — there's nothing to expand per-piece.
+  # Each cleaning + maintenance trigger has two phases: ``_start``
+  # fires BEFORE the kiosk timer opens (pre-session PPE / setup /
+  # verification), ``_end`` fires AFTER Stop (post-session cleaning
+  # verdict / signoff). Mirrors the workstation_start /
+  # workstation_end split we already ship for production sessions.
+  #
+  # `per_equipment_fields` in the schema is only meaningful for the
+  # workstation-scoped ``cleaning_*`` / ``maintenance_*`` triggers
+  # (see `validate_per_equipment_fields/1` below). Equipment-scoped
+  # forms ARE the equipment form — there's nothing to expand per-
+  # piece.
   @triggers ~w(
     workstation_start
     workstation_end
-    cleaning
-    maintenance
-    equipment_cleaning
-    equipment_maintenance
+    cleaning_start
+    cleaning_end
+    maintenance_start
+    maintenance_end
+    equipment_cleaning_start
+    equipment_cleaning_end
+    equipment_maintenance_start
+    equipment_maintenance_end
   )
 
-  @equipment_scoped_triggers ~w(equipment_cleaning equipment_maintenance)
+  @equipment_scoped_triggers ~w(
+    equipment_cleaning_start
+    equipment_cleaning_end
+    equipment_maintenance_start
+    equipment_maintenance_end
+  )
+
+  # Triggers that support the `per_equipment_fields` authoring pane
+  # (workstation-scoped cleaning + maintenance, both phases).
+  @per_equipment_fields_triggers ~w(
+    cleaning_start
+    cleaning_end
+    maintenance_start
+    maintenance_end
+  )
 
   def equipment_scoped_triggers, do: @equipment_scoped_triggers
 
@@ -52,6 +77,11 @@ defmodule Backend.Forms.FormTemplate do
     do: trigger in @equipment_scoped_triggers
 
   def equipment_scoped?(_), do: false
+
+  def supports_per_equipment_fields?(trigger) when is_binary(trigger),
+    do: trigger in @per_equipment_fields_triggers
+
+  def supports_per_equipment_fields?(_), do: false
 
   def triggers, do: @triggers
 
@@ -139,14 +169,16 @@ defmodule Backend.Forms.FormTemplate do
           not (is_nil(per_eq) or is_list(per_eq)) ->
             add_error(cs, :schema, "`per_equipment_fields` must be a list or null")
 
-          equipment_scoped?(trigger) and is_list(per_eq) and per_eq != [] ->
-            # Equipment-scoped forms already target one machine —
-            # there's no cell to expand per-piece against. Reject
-            # per_equipment_fields to keep the model honest.
+          not supports_per_equipment_fields?(trigger) and is_list(per_eq) and per_eq != [] ->
+            # Only workstation-scoped cleaning + maintenance triggers
+            # (both phases) support the per-equipment expansion. Any
+            # other trigger — workstation_start/end (production
+            # hooks) or equipment-scoped (already targets one machine)
+            # — must keep the machine questions inline in `fields`.
             add_error(
               cs,
               :schema,
-              "`per_equipment_fields` is not applicable to equipment-scoped triggers; put the machine questions directly in `fields`"
+              "`per_equipment_fields` is not applicable to this trigger; put the machine questions directly in `fields`"
             )
 
           true ->

@@ -1,4 +1,5 @@
-import { Sparkles, Wrench, ClipboardCheck, AlertTriangle } from "lucide-react";
+import Link from "next/link";
+import { Sparkles, Wrench, ClipboardCheck, AlertTriangle, History } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -6,6 +7,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { formatCompanyDate, type FormatPrefs } from "@/lib/format/company";
 import { listWorkstationEvents } from "@/lib/production/audit-events";
 import type {
@@ -172,20 +174,30 @@ export async function CleaningMaintenanceSection({
 
   return (
     <Card className="border-border/60">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-sm">
-          <ClipboardCheck
-            className="size-4 text-muted-foreground"
-            aria-hidden
-          />
-          Cleaning &amp; Maintenance
-        </CardTitle>
-        <CardDescription className="text-[12px]">
-          Compliance record for this workstation. Cleaning + maintenance
-          sessions kicked off on the kiosk land here as immutable audit
-          rows. Auditor asks &ldquo;how often do you clean / maintain
-          this workstation&rdquo; — this is the answer.
-        </CardDescription>
+      <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+        <div className="space-y-1">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <ClipboardCheck
+              className="size-4 text-muted-foreground"
+              aria-hidden
+            />
+            Cleaning &amp; Maintenance
+          </CardTitle>
+          <CardDescription className="text-[12px]">
+            Compliance record for this workstation. Cleaning + maintenance
+            sessions kicked off on the kiosk land here as immutable audit
+            rows. Auditor asks &ldquo;how often do you clean / maintain
+            this workstation&rdquo; — this is the answer.
+          </CardDescription>
+        </div>
+        <Button asChild size="sm" variant="outline" className="shrink-0">
+          <Link
+            href={`/production/sessions?workstation_uuid=${workstationUuid}`}
+          >
+            <History className="mr-1.5 size-4" />
+            All submissions
+          </Link>
+        </Button>
       </CardHeader>
       <CardContent className="space-y-6">
         <div className="grid gap-4 sm:grid-cols-2">

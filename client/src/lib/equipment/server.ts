@@ -176,7 +176,11 @@ export async function listEquipmentCategories(opts?: {
  *  list without a second round-trip. */
 export interface CategoryFormAssignment {
   uuid: string;
-  slot: "equipment_cleaning" | "equipment_maintenance";
+  slot:
+    | "equipment_cleaning_start"
+    | "equipment_cleaning_end"
+    | "equipment_maintenance_start"
+    | "equipment_maintenance_end";
   sort_order: number;
   form_template: {
     uuid: string;

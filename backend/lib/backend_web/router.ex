@@ -903,6 +903,19 @@ defmodule BackendWeb.Router do
           WorkstationEventController,
           :index
 
+      # Form submission audit trail — every filled kiosk form,
+      # mirrored from vp. Powers the /production/sessions explorer
+      # + its four entry-point drilldowns (form, workstation,
+      # equipment, worker). Read-only; writes come from vp via
+      # /api/integration/form-submissions.
+      get "/form-submissions", FormSubmissionController, :index
+      # Typeahead for the four filter facets on the explorer page.
+      # ``?type=workstation|equipment|form|submitter&q=...&limit=20``.
+      # ``?uuid=...`` resolves a preselected filter to a label without
+      # loading the full picker list.
+      get "/form-submissions/lookups", FormSubmissionController, :lookup
+      get "/form-submissions/:uuid", FormSubmissionController, :show
+
       # Company-wide overdue cleaning + maintenance summary. Feeds
       # the dashboard widget. Cheap read; returns four buckets
       # (workstation cleaning/maintenance + equipment cleaning/
@@ -2314,6 +2327,14 @@ defmodule BackendWeb.Router do
     post "/workstations/:uuid/sessions",
          IntegrationSessionController,
          :create_workstation_session
+
+    # Form-response mirror. vp posts one row per FormResponse via the
+    # ``form_submission`` outbox kind; PSP stores the audit trail for
+    # the ``/production/sessions`` explorer. Idempotent on
+    # ``(company_id, vp_response_id)``.
+    post "/form-submissions",
+         IntegrationFormSubmissionController,
+         :create
 
     # Cleaning-complete callback from vita-perf's personal kiosk.
     # Updates cleaning schedule cache + drops per-equipment audit

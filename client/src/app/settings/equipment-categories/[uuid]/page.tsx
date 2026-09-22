@@ -54,8 +54,10 @@ export default async function EquipmentCategoryDetailPage({
   const equipmentTemplates = (allTemplates ?? []).filter(
     (t) =>
       t.is_active &&
-      (t.trigger === "equipment_cleaning" ||
-        t.trigger === "equipment_maintenance"),
+      (t.trigger === "equipment_cleaning_start" ||
+        t.trigger === "equipment_cleaning_end" ||
+        t.trigger === "equipment_maintenance_start" ||
+        t.trigger === "equipment_maintenance_end"),
   );
 
   return (

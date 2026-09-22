@@ -51,10 +51,25 @@ defmodule Backend.Forms.Publisher do
   # PSP trigger enum maps 1:1 to what vita-perf's publish endpoint
   # expects (with `cleaning` added there in migration 0002).
   @valid_triggers ~w(
-    workstation_start workstation_end
-    cleaning maintenance
-    equipment_cleaning equipment_maintenance
+    workstation_start
+    workstation_end
+    cleaning_start
+    cleaning_end
+    maintenance_start
+    maintenance_end
+    equipment_cleaning_start
+    equipment_cleaning_end
+    equipment_maintenance_start
+    equipment_maintenance_end
   )
+
+  # Cleaning + maintenance triggers that ALSO carry the cadence
+  # scalars in their publish payload — the ``_end`` phases are what
+  # bump next-due after a session completes, so those are the ones
+  # the vp mirror uses for its due-soon chips. The ``_start`` phases
+  # don't need cadence context.
+  @cleaning_end_triggers ~w(cleaning_end equipment_cleaning_end)
+  @maintenance_end_triggers ~w(maintenance_end equipment_maintenance_end)
 
   @doc """
   Fire-and-forget publish for `template` across every workstation it
@@ -247,19 +262,19 @@ defmodule Backend.Forms.Publisher do
 
       payload =
         cond do
-          trigger == "cleaning" ->
+          trigger == "cleaning_end" ->
             Map.put(payload, "workstation_cleaning_schedule", %{
               "last_cleaning_at" => encode_datetime(ws.last_cleaning_at),
               "next_cleaning_due_at" => encode_date(ws.next_cleaning_due_at)
             })
 
-          trigger == "maintenance" ->
+          trigger == "maintenance_end" ->
             Map.put(payload, "workstation_maintenance_schedule", %{
               "last_maintenance_at" => encode_datetime(ws.last_maintenance_at),
               "next_maintenance_due_at" => encode_date(ws.next_maintenance_due_at)
             })
 
-          trigger == "equipment_cleaning" ->
+          trigger == "equipment_cleaning_end" ->
             case equipment do
               %Backend.Equipment.Equipment{
                 last_cleaning_at: last_at,
@@ -274,7 +289,7 @@ defmodule Backend.Forms.Publisher do
                 payload
             end
 
-          trigger == "equipment_maintenance" ->
+          trigger == "equipment_maintenance_end" ->
             case equipment do
               %Backend.Equipment.Equipment{
                 last_maintenance_at: last_at,
@@ -288,6 +303,9 @@ defmodule Backend.Forms.Publisher do
               _ ->
                 payload
             end
+
+          trigger in @cleaning_end_triggers or trigger in @maintenance_end_triggers ->
+            payload
 
           true ->
             payload

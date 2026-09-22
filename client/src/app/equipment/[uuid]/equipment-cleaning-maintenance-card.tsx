@@ -1,4 +1,11 @@
-import { Sparkles, Wrench, ClipboardCheck, AlertTriangle } from "lucide-react";
+import Link from "next/link";
+import {
+  Sparkles,
+  Wrench,
+  ClipboardCheck,
+  AlertTriangle,
+  History,
+} from "lucide-react";
 import {
   Card,
   CardContent,
@@ -6,6 +13,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { formatCompanyDate, type FormatPrefs } from "@/lib/format/company";
 import type { Equipment, EquipmentEvent } from "@/lib/equipment/types";
 
@@ -171,22 +179,32 @@ export function EquipmentCleaningMaintenanceCard({
 
   return (
     <Card className="border-border/60">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-sm">
-          <ClipboardCheck
-            className="size-4 text-muted-foreground"
-            aria-hidden
-          />
-          Cleaning &amp; Maintenance
-        </CardTitle>
-        <CardDescription className="text-[12px]">
-          Compliance record for this machine. Every cleaning /
-          maintenance session an operator ran against this specific
-          serial number lands here as an immutable audit row.
-          Distinct from the parent workstation&apos;s cleaning +
-          maintenance log — cleaning the cell is not the same as
-          cleaning the machine on it.
-        </CardDescription>
+      <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+        <div className="space-y-1">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <ClipboardCheck
+              className="size-4 text-muted-foreground"
+              aria-hidden
+            />
+            Cleaning &amp; Maintenance
+          </CardTitle>
+          <CardDescription className="text-[12px]">
+            Compliance record for this machine. Every cleaning /
+            maintenance session an operator ran against this specific
+            serial number lands here as an immutable audit row.
+            Distinct from the parent workstation&apos;s cleaning +
+            maintenance log — cleaning the cell is not the same as
+            cleaning the machine on it.
+          </CardDescription>
+        </div>
+        <Button asChild size="sm" variant="outline" className="shrink-0">
+          <Link
+            href={`/production/sessions?equipment_uuid=${equipment.uuid}`}
+          >
+            <History className="mr-1.5 size-4" />
+            All submissions
+          </Link>
+        </Button>
       </CardHeader>
       <CardContent className="space-y-6">
         <div className="grid gap-4 sm:grid-cols-2">

@@ -104,6 +104,11 @@ const ITEMS: SubnavItem[] = [
     Icon: ClipboardList,
   },
   {
+    href: "/production/sessions",
+    label: "Session history",
+    Icon: ClipboardCheck,
+  },
+  {
     href: "/production/statistics",
     label: "Statistics",
     Icon: Workflow,

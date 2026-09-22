@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
-import { Loader2, RotateCcw, Trash2 } from "lucide-react";
+import { History, Loader2, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge-mini";
 import { Button } from "@/components/ui/button";
@@ -42,16 +42,25 @@ interface Props {
 
 type TriggerFilter = "all" | FormTrigger;
 
+// Colour tokens are grouped by activity + phase so a filtered
+// ledger view keeps the trigger family visually cohesive: workstation-
+// scoped cleaning/maintenance share their hue with equipment-scoped
+// cleaning/maintenance, and the ``_start`` phase gets a lighter tone
+// than the ``_end`` phase of the same activity.
 const TRIGGER_TONE: Record<
   FormTrigger,
   "sky" | "amber" | "emerald" | "indigo" | "muted" | "brand"
 > = {
   workstation_start: "sky",
   workstation_end: "amber",
-  cleaning: "emerald",
-  maintenance: "indigo",
-  equipment_cleaning: "brand",
-  equipment_maintenance: "muted",
+  cleaning_start: "muted",
+  cleaning_end: "emerald",
+  maintenance_start: "muted",
+  maintenance_end: "indigo",
+  equipment_cleaning_start: "muted",
+  equipment_cleaning_end: "brand",
+  equipment_maintenance_start: "muted",
+  equipment_maintenance_end: "indigo",
 };
 
 export function FormsTable({ initial, canEdit }: Props) {
@@ -140,13 +149,29 @@ export function FormsTable({ initial, canEdit }: Props) {
             <SelectItem value="all">All triggers</SelectItem>
             <SelectItem value="workstation_start">Workstation start</SelectItem>
             <SelectItem value="workstation_end">Workstation end</SelectItem>
-            <SelectItem value="cleaning">Cleaning (workstation)</SelectItem>
-            <SelectItem value="maintenance">Maintenance (workstation)</SelectItem>
-            <SelectItem value="equipment_cleaning">
-              Cleaning (equipment)
+            <SelectItem value="cleaning_start">
+              Cleaning (workstation) · start
             </SelectItem>
-            <SelectItem value="equipment_maintenance">
-              Maintenance (equipment)
+            <SelectItem value="cleaning_end">
+              Cleaning (workstation) · end
+            </SelectItem>
+            <SelectItem value="maintenance_start">
+              Maintenance (workstation) · start
+            </SelectItem>
+            <SelectItem value="maintenance_end">
+              Maintenance (workstation) · end
+            </SelectItem>
+            <SelectItem value="equipment_cleaning_start">
+              Cleaning (equipment) · start
+            </SelectItem>
+            <SelectItem value="equipment_cleaning_end">
+              Cleaning (equipment) · end
+            </SelectItem>
+            <SelectItem value="equipment_maintenance_start">
+              Maintenance (equipment) · start
+            </SelectItem>
+            <SelectItem value="equipment_maintenance_end">
+              Maintenance (equipment) · end
             </SelectItem>
           </SelectContent>
         </Select>
@@ -234,6 +259,19 @@ export function FormsTable({ initial, canEdit }: Props) {
                     )}
                   </TableCell>
                   <TableCell className="text-right">
+                    <Button
+                      asChild
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                    >
+                      <Link
+                        href={`/production/sessions?form_template_uuid=${row.uuid}`}
+                      >
+                        <History className="mr-1 size-4" />
+                        Submissions
+                      </Link>
+                    </Button>
                     {canEdit &&
                       (row.is_active ? (
                         <Button

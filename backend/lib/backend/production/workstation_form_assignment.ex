@@ -15,7 +15,14 @@ defmodule Backend.Production.WorkstationFormAssignment do
   alias Backend.Forms.FormTemplate
   alias Backend.Production.Workstation
 
-  @slots ~w(workstation_start workstation_end cleaning maintenance)
+  @slots ~w(
+    workstation_start
+    workstation_end
+    cleaning_start
+    cleaning_end
+    maintenance_start
+    maintenance_end
+  )
 
   def slots, do: @slots
 

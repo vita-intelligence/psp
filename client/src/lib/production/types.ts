@@ -291,13 +291,25 @@ export interface WorkstationDefaultWorker {
 
 export interface WorkstationFormAssignment {
   id: number;
-  slot: "workstation_start" | "workstation_end" | "cleaning";
+  slot:
+    | "workstation_start"
+    | "workstation_end"
+    | "cleaning_start"
+    | "cleaning_end"
+    | "maintenance_start"
+    | "maintenance_end";
   sort_order: number;
   form_template: {
     id: number;
     uuid: string;
     name: string;
-    trigger: "workstation_start" | "workstation_end" | "cleaning";
+    trigger:
+      | "workstation_start"
+      | "workstation_end"
+      | "cleaning_start"
+      | "cleaning_end"
+      | "maintenance_start"
+      | "maintenance_end";
     is_active: boolean;
   };
 }

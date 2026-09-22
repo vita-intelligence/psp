@@ -170,13 +170,17 @@ export function FormBuilder({
   }
 
   // per_equipment_fields only apply to workstation-scoped cleaning
-  // or maintenance forms — the ones where the operator services
-  // the whole cell but each attached machine repeats a sub-checklist.
-  // Equipment-scoped triggers already target one machine so there's
-  // no expansion to do; workstation start/end triggers are not tied
-  // to a physical clean/service so per-machine sub-forms don't fit.
+  // or maintenance forms (either phase) — the ones where the
+  // operator services the whole cell but each attached machine
+  // repeats a sub-checklist. Equipment-scoped triggers already
+  // target one machine so there's no expansion to do; workstation
+  // start/end triggers are not tied to a physical clean/service so
+  // per-machine sub-forms don't fit.
   const supportsPerEquipmentFields =
-    state.trigger === "cleaning" || state.trigger === "maintenance";
+    state.trigger === "cleaning_start" ||
+    state.trigger === "cleaning_end" ||
+    state.trigger === "maintenance_start" ||
+    state.trigger === "maintenance_end";
   const canvas = activeTab === "per_equipment" ? "per_equipment_fields" : "fields";
   const activeFields = state[canvas];
 
@@ -319,17 +323,29 @@ export function FormBuilder({
                   <SelectItem value="workstation_end">
                     {TRIGGER_LABELS.workstation_end}
                   </SelectItem>
-                  <SelectItem value="cleaning">
-                    {TRIGGER_LABELS.cleaning}
+                  <SelectItem value="cleaning_start">
+                    {TRIGGER_LABELS.cleaning_start}
                   </SelectItem>
-                  <SelectItem value="maintenance">
-                    {TRIGGER_LABELS.maintenance}
+                  <SelectItem value="cleaning_end">
+                    {TRIGGER_LABELS.cleaning_end}
                   </SelectItem>
-                  <SelectItem value="equipment_cleaning">
-                    {TRIGGER_LABELS.equipment_cleaning}
+                  <SelectItem value="maintenance_start">
+                    {TRIGGER_LABELS.maintenance_start}
                   </SelectItem>
-                  <SelectItem value="equipment_maintenance">
-                    {TRIGGER_LABELS.equipment_maintenance}
+                  <SelectItem value="maintenance_end">
+                    {TRIGGER_LABELS.maintenance_end}
+                  </SelectItem>
+                  <SelectItem value="equipment_cleaning_start">
+                    {TRIGGER_LABELS.equipment_cleaning_start}
+                  </SelectItem>
+                  <SelectItem value="equipment_cleaning_end">
+                    {TRIGGER_LABELS.equipment_cleaning_end}
+                  </SelectItem>
+                  <SelectItem value="equipment_maintenance_start">
+                    {TRIGGER_LABELS.equipment_maintenance_start}
+                  </SelectItem>
+                  <SelectItem value="equipment_maintenance_end">
+                    {TRIGGER_LABELS.equipment_maintenance_end}
                   </SelectItem>
                 </SelectContent>
               </Select>

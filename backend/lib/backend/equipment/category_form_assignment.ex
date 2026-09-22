@@ -22,7 +22,12 @@ defmodule Backend.Equipment.CategoryFormAssignment do
   alias Backend.Equipment.Category
   alias Backend.Forms.FormTemplate
 
-  @slots ~w(equipment_cleaning equipment_maintenance)
+  @slots ~w(
+    equipment_cleaning_start
+    equipment_cleaning_end
+    equipment_maintenance_start
+    equipment_maintenance_end
+  )
 
   def slots, do: @slots
 

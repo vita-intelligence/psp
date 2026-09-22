@@ -10,10 +10,14 @@
 export type FormTrigger =
   | "workstation_start"
   | "workstation_end"
-  | "cleaning"
-  | "maintenance"
-  | "equipment_cleaning"
-  | "equipment_maintenance";
+  | "cleaning_start"
+  | "cleaning_end"
+  | "maintenance_start"
+  | "maintenance_end"
+  | "equipment_cleaning_start"
+  | "equipment_cleaning_end"
+  | "equipment_maintenance_start"
+  | "equipment_maintenance_end";
 
 /** Set of triggers whose forms attach to an equipment CATEGORY on
  *  PSP (not a workstation). Equipment-scoped forms fire when an
@@ -24,8 +28,10 @@ export type FormTrigger =
  *  (`Backend.Forms.FormTemplate.@equipment_scoped_triggers`) — grep
  *  for `equipment_scoped_triggers` if you rename either. */
 export const EQUIPMENT_SCOPED_TRIGGERS: ReadonlySet<FormTrigger> = new Set([
-  "equipment_cleaning",
-  "equipment_maintenance",
+  "equipment_cleaning_start",
+  "equipment_cleaning_end",
+  "equipment_maintenance_start",
+  "equipment_maintenance_end",
 ]);
 
 export function isEquipmentScopedTrigger(t: FormTrigger): boolean {
@@ -40,7 +46,21 @@ export function isEquipmentScopedTrigger(t: FormTrigger): boolean {
  *  triggers. */
 export type WorkstationFormTrigger = Exclude<
   FormTrigger,
-  "equipment_cleaning" | "equipment_maintenance"
+  | "equipment_cleaning_start"
+  | "equipment_cleaning_end"
+  | "equipment_maintenance_start"
+  | "equipment_maintenance_end"
+>;
+
+/** Subset of triggers whose forms attach to an equipment CATEGORY.
+ *  Every entry in `EQUIPMENT_SCOPED_TRIGGERS` narrowed at the type
+ *  level. */
+export type EquipmentFormTrigger = Extract<
+  FormTrigger,
+  | "equipment_cleaning_start"
+  | "equipment_cleaning_end"
+  | "equipment_maintenance_start"
+  | "equipment_maintenance_end"
 >;
 
 export type FormFieldType =
@@ -126,10 +146,14 @@ export interface FormTemplateSummary {
 export const TRIGGER_LABELS: Record<FormTrigger, string> = {
   workstation_start: "Workstation start",
   workstation_end: "Workstation end",
-  cleaning: "Cleaning (workstation)",
-  maintenance: "Maintenance (workstation)",
-  equipment_cleaning: "Cleaning (equipment)",
-  equipment_maintenance: "Maintenance (equipment)",
+  cleaning_start: "Cleaning (workstation) · start",
+  cleaning_end: "Cleaning (workstation) · end",
+  maintenance_start: "Maintenance (workstation) · start",
+  maintenance_end: "Maintenance (workstation) · end",
+  equipment_cleaning_start: "Cleaning (equipment) · start",
+  equipment_cleaning_end: "Cleaning (equipment) · end",
+  equipment_maintenance_start: "Maintenance (equipment) · start",
+  equipment_maintenance_end: "Maintenance (equipment) · end",
 };
 
 export const TRIGGER_DESCRIPTIONS: Record<FormTrigger, string> = {
@@ -137,12 +161,20 @@ export const TRIGGER_DESCRIPTIONS: Record<FormTrigger, string> = {
     "Fires on the kiosk when a worker starts a job on this workstation (before the timer begins).",
   workstation_end:
     "Fires on the kiosk when a worker ends their job on this workstation (before the timer stops).",
-  cleaning:
-    "Fires when a worker taps Cleaning + picks this workstation — cleaning the cell itself. Attach this form on the workstation. Per-equipment sections auto-generate at publish time (see the field group below).",
-  maintenance:
-    "Fires when a worker taps Maintenance + picks this workstation — servicing the cell itself. Attach this form on the workstation. Same authoring shape as cleaning.",
-  equipment_cleaning:
-    "Fires when a worker scopes a cleaning session to a specific MACHINE (e.g. CIP the V-blender). Attach this form on an equipment CATEGORY — every machine in that category inherits it, so one checklist covers every V-blender in the plant.",
-  equipment_maintenance:
-    "Fires when a worker scopes a maintenance session to a specific MACHINE. Same authoring shape + attachment (equipment category) as equipment cleaning.",
+  cleaning_start:
+    "Fires BEFORE the kiosk timer opens on a cleaning session (pre-cleaning PPE / setup checklist). Attach this form on the workstation.",
+  cleaning_end:
+    "Fires AFTER the operator taps Stop on a cleaning session (post-cleaning verification / signoff). Attach on the workstation. Per-equipment sections auto-generate at publish time (see the field group below).",
+  maintenance_start:
+    "Fires BEFORE the kiosk timer opens on a maintenance session. Attach on the workstation. Same authoring shape as the cleaning start.",
+  maintenance_end:
+    "Fires AFTER the operator taps Stop on a maintenance session. Attach on the workstation. Per-equipment sections auto-generate at publish time.",
+  equipment_cleaning_start:
+    "Fires BEFORE the kiosk timer opens when a worker scopes a cleaning session to a specific MACHINE. Attach on an equipment CATEGORY — every machine in that category inherits it.",
+  equipment_cleaning_end:
+    "Fires AFTER Stop when a worker scopes a cleaning session to a specific MACHINE (e.g. CIP the V-blender). Attach on an equipment CATEGORY — one checklist covers every V-blender in the plant.",
+  equipment_maintenance_start:
+    "Fires BEFORE the kiosk timer opens when a worker scopes a maintenance session to a specific MACHINE. Attach on an equipment CATEGORY.",
+  equipment_maintenance_end:
+    "Fires AFTER Stop when a worker scopes a maintenance session to a specific MACHINE. Attach on an equipment CATEGORY.",
 };

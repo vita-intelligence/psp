@@ -131,8 +131,10 @@ interface FormState {
   form_assignments: {
     workstation_start: string[];
     workstation_end: string[];
-    cleaning: string[];
-    maintenance: string[];
+    cleaning_start: string[];
+    cleaning_end: string[];
+    maintenance_start: string[];
+    maintenance_end: string[];
   };
   cleaning_periodicity: CleaningPeriodicity;
   cleaning_periodicity_interval: string;
@@ -159,8 +161,10 @@ function initialFrom(
   const emptyAssignments = {
     workstation_start: [] as string[],
     workstation_end: [] as string[],
-    cleaning: [] as string[],
-    maintenance: [] as string[],
+    cleaning_start: [] as string[],
+    cleaning_end: [] as string[],
+    maintenance_start: [] as string[],
+    maintenance_end: [] as string[],
   };
 
   if (!ws) {
@@ -486,7 +490,10 @@ export function WorkstationForm({
               [
                 "workstation_start",
                 "workstation_end",
-                "cleaning",
+                "cleaning_start",
+                "cleaning_end",
+                "maintenance_start",
+                "maintenance_end",
               ] as const
             ).flatMap((trigger) =>
               state.form_assignments[trigger].map((uuid, idx) => ({
@@ -1190,15 +1197,19 @@ function FormAssignmentsSection({
     const m: Record<WorkstationFormTrigger, FormTemplate[]> = {
       workstation_start: [],
       workstation_end: [],
-      cleaning: [],
-      maintenance: [],
+      cleaning_start: [],
+      cleaning_end: [],
+      maintenance_start: [],
+      maintenance_end: [],
     };
+    const equipmentScoped = new Set<string>([
+      "equipment_cleaning_start",
+      "equipment_cleaning_end",
+      "equipment_maintenance_start",
+      "equipment_maintenance_end",
+    ]);
     for (const t of templates) {
-      if (
-        t.is_active &&
-        t.trigger !== "equipment_cleaning" &&
-        t.trigger !== "equipment_maintenance"
-      ) {
+      if (t.is_active && !equipmentScoped.has(t.trigger)) {
         m[t.trigger as WorkstationFormTrigger].push(t);
       }
     }
@@ -1378,11 +1389,34 @@ function FormAssignmentsSection({
 
       <div className="space-y-3 rounded-md border border-border/60 bg-background/60 p-3">
         <SectionTitle>Cleaning</SectionTitle>
-        {renderMultiPicker(
-          "cleaning",
-          "Cleaning forms",
-          "Kiosk walks them in order. Attached equipment is inserted as sections automatically at publish time.",
-        )}
+        <div className="grid gap-3 sm:grid-cols-2">
+          {renderMultiPicker(
+            "cleaning_start",
+            "Start-of-cleaning forms",
+            "Fire BEFORE the timer opens on a cleaning session — pre-cleaning PPE / setup checklist. Kiosk walks them in order.",
+          )}
+          {renderMultiPicker(
+            "cleaning_end",
+            "End-of-cleaning forms",
+            "Fire AFTER the operator taps Stop — post-cleaning verification / signoff. Attached equipment is inserted as sections automatically at publish time.",
+          )}
+        </div>
+
+        <div className="mt-2 rounded-md border border-dashed border-border/40 p-2">
+          <SectionTitle>Maintenance</SectionTitle>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {renderMultiPicker(
+              "maintenance_start",
+              "Start-of-maintenance forms",
+              "Fire BEFORE the timer opens on a maintenance session — pre-service verification.",
+            )}
+            {renderMultiPicker(
+              "maintenance_end",
+              "End-of-maintenance forms",
+              "Fire AFTER the operator taps Stop — post-service verdict.",
+            )}
+          </div>
+        </div>
 
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">

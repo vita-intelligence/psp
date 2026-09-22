@@ -122,6 +122,7 @@ export default async function HREmployeeDetailPage({
           </EditModeToggle>
           <EmployeeSessionsCard
             employeeUuid={employee.uuid}
+            workerUuid={employee.external_id}
             initialSessions={sessions}
             prefs={prefs}
             viewAllHref={sessionsViewAll}

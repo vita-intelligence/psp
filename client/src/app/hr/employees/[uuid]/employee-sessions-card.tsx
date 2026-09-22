@@ -9,6 +9,11 @@ import { SessionsTimeline } from "@/components/production/sessions-timeline";
 
 interface EmployeeSessionsCardProps {
   employeeUuid: string;
+  /** vp Worker uuid (stored on PSP as ``Employee.external_id``).
+   *  When set, the card shows a "Form submissions" link so an admin
+   *  can jump straight to every form this worker filled on the
+   *  kiosk. */
+  workerUuid?: string | null;
   /** Server-fetched initial rows. A `router.refresh()` fires on every
    *  realtime broadcast so this prop stays fresh without the client
    *  re-fetching. */
@@ -35,6 +40,7 @@ interface EmployeeSessionsCardProps {
  */
 export function EmployeeSessionsCard({
   employeeUuid,
+  workerUuid,
   initialSessions,
   prefs,
   viewAllHref,
@@ -67,14 +73,24 @@ export function EmployeeSessionsCard({
             )}
           </span>
         </div>
-        {viewAllHref && (
-          <Link
-            href={viewAllHref}
-            className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-          >
-            View all →
-          </Link>
-        )}
+        <div className="flex items-center gap-3">
+          {workerUuid && (
+            <Link
+              href={`/production/sessions?submitted_by_uuid=${workerUuid}`}
+              className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+            >
+              Form submissions →
+            </Link>
+          )}
+          {viewAllHref && (
+            <Link
+              href={viewAllHref}
+              className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+            >
+              View all →
+            </Link>
+          )}
+        </div>
       </header>
 
       <SessionsTimeline
