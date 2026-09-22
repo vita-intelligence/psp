@@ -65,9 +65,15 @@ RUN mix release --overwrite
 
 FROM ${RUNNER_IMAGE} AS runtime
 
+# chromium: ChromicPDF requires a real Chrome/Chromium binary in
+# $PATH for label + BMR PDF generation. Without it the release
+# supervision tree crashes at boot with:
+#   could not find executable from ["chromium-browser", "chromium", ...]
+# fonts-liberation + libnss3 pulled in as chromium's runtime deps.
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends \
-        libstdc++6 openssl libncurses6 locales ca-certificates tini && \
+        libstdc++6 openssl libncurses6 locales ca-certificates tini \
+        chromium fonts-liberation libnss3 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # UTF-8 locale so PDF/label generation with non-ASCII chars works
