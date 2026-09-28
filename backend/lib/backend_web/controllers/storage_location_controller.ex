@@ -16,6 +16,8 @@ defmodule BackendWeb.StorageLocationController do
 
   use BackendWeb, :controller
 
+  require Logger
+
   alias Backend.Warehouses
   alias Backend.Warehouses.Plans
   alias BackendWeb.{Errors, Payloads, WarehousePlanBroadcast}
@@ -231,6 +233,10 @@ defmodule BackendWeb.StorageLocationController do
   end
 
   defp changeset_error(conn, cs) do
+    Logger.warning(
+      "storage_location changeset rejected — errors=#{inspect(Errors.changeset_fields(cs))} changes=#{inspect(cs.changes)}"
+    )
+
     conn
     |> put_status(:unprocessable_entity)
     |> json(
