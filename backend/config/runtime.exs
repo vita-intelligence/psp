@@ -149,7 +149,16 @@ if config_env() == :prod do
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
       # See the documentation on https://hexdocs.pm/bandit/Bandit.html#t:options/0
       # for details about using IPv6 vs IPv4 and loopback vs public addresses.
-      ip: {0, 0, 0, 0, 0, 0, 0, 0}
+      ip: {0, 0, 0, 0, 0, 0, 0, 0},
+      # Plan editor's `canvas_patch` frames + fragmented messages can
+      # exceed Bandit's 8 MB defaults on floors with many locations +
+      # cells; hitting the cap kills the whole `UserSocket` with
+      # "Received oversize fragmented message" and forces every channel
+      # to reconnect. Bump both caps to 32 MB.
+      websocket_options: [
+        max_frame_size: 32_000_000,
+        max_fragmented_message_size: 32_000_000
+      ]
     ],
     secret_key_base: secret_key_base
 

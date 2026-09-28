@@ -21,7 +21,17 @@ config :backend, Backend.Repo,
 config :backend, BackendWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
-  http: [ip: {0, 0, 0, 0}],
+  http: [
+    ip: {0, 0, 0, 0},
+    # Plan editor's `canvas_patch` frames + fragmented messages can
+    # exceed Bandit's 8 MB defaults on floors with many locations +
+    # cells; keep dev in sync with prod so testing catches size issues
+    # here first.
+    websocket_options: [
+      max_frame_size: 32_000_000,
+      max_fragmented_message_size: 32_000_000
+    ]
+  ],
   # HTTPS listener so the realtime WebSocket can run as `wss://` when
   # the FE is served over HTTPS (dev cert from the Next.js side covers
   # localhost). Without this, modern browsers block `ws://` from an
@@ -32,7 +42,11 @@ config :backend, BackendWeb.Endpoint,
     port: 4001,
     cipher_suite: :strong,
     keyfile: Path.expand("../../client/certificates/localhost-key.pem", __DIR__),
-    certfile: Path.expand("../../client/certificates/localhost.pem", __DIR__)
+    certfile: Path.expand("../../client/certificates/localhost.pem", __DIR__),
+    websocket_options: [
+      max_frame_size: 32_000_000,
+      max_fragmented_message_size: 32_000_000
+    ]
   ],
   check_origin: false,
   code_reloader: true,
