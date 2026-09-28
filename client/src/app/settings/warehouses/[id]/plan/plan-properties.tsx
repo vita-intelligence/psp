@@ -179,6 +179,32 @@ export function PlanProperties(props: PlanPropertiesProps) {
             bow={outline.edgeBows?.[item.index] ?? 0}
             readOnly={readOnly}
             onBowChange={(b) => onOutlineEdgeBowChange(item.index, b)}
+            onLengthChange={(newLengthCm) => {
+              // Rescale this edge to the requested length by moving
+              // its END vertex along the current p1→p2 direction.
+              // The moved vertex is shared with the next edge, so
+              // that edge deforms too — matches the mental model of
+              // "grab this corner and drag it to a set distance".
+              const pts = outline.points;
+              const i = item.index;
+              const j = (i + 1) % pts.length;
+              const p1 = pts[i]!;
+              const p2 = pts[j]!;
+              const dx = p2.x - p1.x;
+              const dy = p2.y - p1.y;
+              const currentChord = Math.hypot(dx, dy);
+              if (currentChord < 1) return;
+              const scale = newLengthCm / currentChord;
+              const nextPoints = pts.map((p, idx) =>
+                idx === j
+                  ? {
+                      x: Math.round(p1.x + dx * scale),
+                      y: Math.round(p1.y + dy * scale),
+                    }
+                  : p,
+              );
+              onOutlineUpdate({ points: nextPoints });
+            }}
           />
         ) : null;
     } else if (item.kind === "hole") {
@@ -205,6 +231,29 @@ export function PlanProperties(props: PlanPropertiesProps) {
             onBowChange={(b) =>
               onHoleEdgeBowChange(hole.id, item.index, b)
             }
+            onLengthChange={(newLengthCm) => {
+              // Same as outline edges: move the end vertex along the
+              // current direction. The neighbouring edge deforms too.
+              const pts = hole.points;
+              const i = item.index;
+              const j = (i + 1) % pts.length;
+              const p1 = pts[i]!;
+              const p2 = pts[j]!;
+              const dx = p2.x - p1.x;
+              const dy = p2.y - p1.y;
+              const currentChord = Math.hypot(dx, dy);
+              if (currentChord < 1) return;
+              const scale = newLengthCm / currentChord;
+              const nextPoints = pts.map((p, idx) =>
+                idx === j
+                  ? {
+                      x: Math.round(p1.x + dx * scale),
+                      y: Math.round(p1.y + dy * scale),
+                    }
+                  : p,
+              );
+              onHoleUpdate(hole.id, { points: nextPoints });
+            }}
           />
         ) : null;
     } else if (item.kind === "wall") {
@@ -619,12 +668,37 @@ function WallBody({
   const bowRangeCm = Math.max(100, Math.round(length / 2));
   const isCurved = Math.abs(bow) > 0.5;
   const arcLength = isCurved ? wallArcLengthCm(wall) : length;
+
+  // Editing the length rescales the wall along its current direction,
+  // keeping the START point fixed. For curved walls the input is
+  // interpreted as chord length (the arc re-derives from chord + bow).
+  function commitLength(newLengthCm: number) {
+    if (newLengthCm <= 0) return;
+    const dx = wall.x2 - wall.x1;
+    const dy = wall.y2 - wall.y1;
+    const currentChord = Math.hypot(dx, dy);
+    if (currentChord < 1) return; // degenerate — no direction to preserve
+    const scale = newLengthCm / currentChord;
+    onUpdate({
+      x2: Math.round(wall.x1 + dx * scale),
+      y2: Math.round(wall.y1 + dy * scale),
+    });
+  }
+
   return (
     <fieldset disabled={readOnly} className="contents">
       <div className="space-y-3">
-        <Row label={isCurved ? "Arc length" : "Length"}>
-          <span className="font-mono text-xs">{formatLength(arcLength)}</span>
+        <Row label="Length (m)">
+          <MetresInput
+            valueCm={length}
+            onChange={(cm) => cm !== null && commitLength(cm)}
+          />
         </Row>
+        {isCurved && (
+          <Row label="Arc length">
+            <span className="font-mono text-xs">{formatLength(arcLength)}</span>
+          </Row>
+        )}
         <Row label="Start (m)">
           <div className="grid grid-cols-2 gap-1.5">
             <MetresInput
@@ -719,12 +793,18 @@ function PolygonEdgeBody({
   bow,
   readOnly,
   onBowChange,
+  onLengthChange,
 }: {
   p1: Point;
   p2: Point;
   bow: number;
   readOnly: boolean;
   onBowChange: (bow: number) => void;
+  /** Rescales the edge along its current direction, keeping p1 fixed
+   *  and moving p2. Called by the parent, which owns the polygon
+   *  points array — it computes the new p2 and updates the outline
+   *  (or hole). Omitting the callback keeps the length read-only. */
+  onLengthChange?: (newLengthCm: number) => void;
 }) {
   const length = edgeChordLengthCm(p1, p2);
   const bowRangeCm = Math.max(100, Math.round(length / 2));
@@ -733,9 +813,21 @@ function PolygonEdgeBody({
   return (
     <fieldset disabled={readOnly} className="contents">
       <div className="space-y-3">
-        <Row label={isCurved ? "Arc length" : "Length"}>
-          <span className="font-mono text-xs">{formatLength(arcLength)}</span>
+        <Row label="Length (m)">
+          {onLengthChange ? (
+            <MetresInput
+              valueCm={length}
+              onChange={(cm) => cm !== null && cm > 0 && onLengthChange(cm)}
+            />
+          ) : (
+            <span className="font-mono text-xs">{formatLength(length)}</span>
+          )}
         </Row>
+        {isCurved && (
+          <Row label="Arc length">
+            <span className="font-mono text-xs">{formatLength(arcLength)}</span>
+          </Row>
+        )}
         <Row label="Start (m)">
           <span className="font-mono text-[11px] text-muted-foreground">
             ({cmToMetres(p1.x).toFixed(2)}, {cmToMetres(p1.y).toFixed(2)})
