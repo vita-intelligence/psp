@@ -66,6 +66,8 @@ import type { PlanCanvasHandle } from "./plan-canvas";
 import { setSnapEnabled } from "./plan-utils";
 import {
   AlertTriangle,
+  ChevronDown,
+  ChevronUp,
   Grid3x3,
   History,
   Keyboard,
@@ -2883,6 +2885,30 @@ const ReadinessBanner = memo(function ReadinessBanner({
 }) {
   const ready = readiness.ready;
   const counts = readiness.cell_counts_by_purpose;
+  // Collapsed by default so the missing-purpose reason list doesn't
+  // steal the top third of the screen once the operator has read it
+  // once. Preference persists per warehouse so a plan editor pinned
+  // on a workstation keeps whatever state the last user left it in.
+  const storageKey = `psp:readiness-banner-collapsed:${warehouseName}`;
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      const stored = window.localStorage.getItem(storageKey);
+      // Default: collapsed when NOT ready (only the chip strip
+      // stays visible), expanded when ready (compact success row).
+      return stored === null ? !ready : stored === "1";
+    } catch {
+      return !ready;
+    }
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(storageKey, collapsed ? "1" : "0");
+    } catch {
+      /* localStorage unavailable — swallow, state stays in memory */
+    }
+  }, [collapsed, storageKey]);
   const purposes: Array<
     | "regular"
     | "quarantine"
@@ -2946,10 +2972,29 @@ const ReadinessBanner = memo(function ReadinessBanner({
               </span>
             );
           })}
+          {!ready && (
+            <button
+              type="button"
+              onClick={() => setCollapsed((c) => !c)}
+              aria-expanded={!collapsed}
+              aria-label={
+                collapsed
+                  ? "Show missing purposes"
+                  : "Hide missing purposes"
+              }
+              className="ml-1 inline-flex size-5 items-center justify-center rounded-full border border-destructive/40 bg-background text-destructive transition hover:bg-destructive/10"
+            >
+              {collapsed ? (
+                <ChevronDown className="size-3" />
+              ) : (
+                <ChevronUp className="size-3" />
+              )}
+            </button>
+          )}
         </span>
       </div>
 
-      {!ready && (
+      {!ready && !collapsed && (
         <ul className="mt-2 space-y-1 text-[11px]">
           {readiness.missing_purposes.map((b) => (
             <li

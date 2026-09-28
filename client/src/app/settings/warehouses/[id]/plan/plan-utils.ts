@@ -97,9 +97,17 @@ export function formatLength(cm: number): string {
  *   "5,5m"       → 550 (European decimals)
  *   "550cm"      → 550
  *   "200 mm"     → 20
+ *   "-7.25"      → -725 (negative coordinates pass through)
  *   ""           → null
  *   "abc"        → null
- * Negative values are clamped to 0.
+ *
+ * Negative values pass through — wall / vertex coordinates are
+ * anchored to the canvas origin (0, 0) rather than the sheet edge,
+ * so a wall's start point at ``-7.25 m`` is a perfectly valid
+ * layout when the room extends left of the origin. Callers that
+ * want a dimension (a POSITIVE length) — Size (W x H), edge Length,
+ * Location canvas size — enforce ``cm > 0`` at the callsite instead
+ * of relying on the parser to clamp.
  */
 export function parseDimensionToCm(raw: string): number | null {
   const trimmed = raw.trim().toLowerCase().replace(",", ".");
@@ -127,7 +135,7 @@ export function parseDimensionToCm(raw: string): number | null {
     default:
       return null;
   }
-  return Math.max(0, Math.round(cm));
+  return Math.round(cm);
 }
 
 /** Inverse of parseDimensionToCm — for input values shown in metres. */
