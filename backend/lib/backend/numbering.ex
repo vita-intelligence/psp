@@ -156,24 +156,43 @@ defmodule Backend.Numbering do
   code on the row (floor, storage_location, storage_cell). New entities
   should use `render/3` instead of stamping a column.
 
-  Counts existing rows for the company and formats `prefix + lpad(n+1)`.
-  Caller is expected to retry on unique-constraint collision (same
-  contract as before).
+  Uses `MAX(numeric suffix of existing code) + 1` so gapped sequences
+  (a row got deleted, or codes were inserted out of order during data
+  migration) don't produce a colliding auto-code. The prior
+  `COUNT(*) + 1` broke on any gap: 12 rows with SL00009 missing meant
+  the next auto-code was SL00013 — which already existed.
   """
   def next_code(%Company{} = company, entity_key) when is_binary(entity_key) do
     with %{} = format <- get_format(company, entity_key),
          {:ok, prefix} <- fetch_prefix(format),
          padding <- fetch_padding(format),
          schema when not is_nil(schema) <- @entity_schemas[entity_key] do
-      n =
+      like_pattern = prefix <> "%"
+
+      max_code =
         schema
         |> where([s], s.company_id == ^company.id)
-        |> Repo.aggregate(:count, :id)
-        |> Kernel.+(1)
+        |> where([s], like(s.code, ^like_pattern))
+        |> select([s], max(s.code))
+        |> Repo.one()
+
+      n = highest_suffix(max_code, prefix) + 1
 
       prefix <> String.pad_leading(Integer.to_string(n), padding, "0")
     else
       _ -> nil
+    end
+  end
+
+  # Extract the trailing integer from an existing code like `"SL00013"`
+  # given prefix `"SL"`. Returns 0 when the table is empty or the max
+  # code doesn't parse — so a fresh table starts at 1.
+  defp highest_suffix(nil, _prefix), do: 0
+
+  defp highest_suffix(code, prefix) when is_binary(code) do
+    case Integer.parse(String.replace_prefix(code, prefix, "")) do
+      {n, _} -> n
+      :error -> 0
     end
   end
 
