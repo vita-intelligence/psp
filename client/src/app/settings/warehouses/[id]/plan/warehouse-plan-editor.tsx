@@ -1671,6 +1671,16 @@ export function WarehousePlanEditor({
     const dx = 50 * step;
     const dy = 50 * step;
 
+    // storage_tags is a company-scoped registry — the backend rejects
+    // (422) any tag not present in it. If the source location was
+    // copied from a company/env with a populated registry into one
+    // whose registry is missing those entries, keep only tags the
+    // paste target knows so the create call succeeds. Operator can
+    // re-add the missing tags once they're registered.
+    const knownTagKeys = new Set(storageTags.map((t) => t.key));
+    const filterTags = (tags: readonly string[] | null | undefined) =>
+      (tags ?? []).filter((t) => knownTagKeys.has(t));
+
     const newSelection: SelectionSet = [];
 
     updateActiveFloor(
@@ -1795,7 +1805,7 @@ export function WarehousePlanEditor({
                 depth_m: c.depth_m,
                 height_m: c.height_m,
                 max_weight_kg: c.max_weight_kg,
-                tags: [...(c.tags ?? [])],
+                tags: filterTags(c.tags),
                 purpose: c.purpose,
                 notes: c.notes,
               }));
@@ -1816,7 +1826,7 @@ export function WarehousePlanEditor({
                 name: locData.name ? appendCopySuffix(locData.name) : "",
                 x: locData.x + dx,
                 y: locData.y + dy,
-                tags: locData.tags ? [...locData.tags] : [],
+                tags: filterTags(locData.tags),
                 cells: [],
                 pendingCells: pendingCells.length > 0 ? pendingCells : undefined,
                 inserted_at: nowIso,
@@ -1852,7 +1862,13 @@ export function WarehousePlanEditor({
       setTool("select");
     }
     return newSelection.length > 0;
-  }, [activeFloorId, appendCopySuffix, updateActiveFloor, warehouseId]);
+  }, [
+    activeFloorId,
+    appendCopySuffix,
+    storageTags,
+    updateActiveFloor,
+    warehouseId,
+  ]);
 
   /** Duplicate — copy + immediate paste in one gesture. Same
    *  behaviour as Cmd+C then Cmd+V, but the offset resets first so

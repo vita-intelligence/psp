@@ -41,7 +41,12 @@ defmodule BackendWeb.Endpoint do
     # this at runtime in `config/runtime.exs` using PHX_HOST +
     # WS_EXTRA_ORIGINS, so the deployed instance still rejects
     # upgrades from unrelated hosts.
-    websocket: [check_origin: false],
+    # `max_frame_size: 16 MB` — plan-editor `canvas_patch` broadcasts
+    # can exceed Bandit's 1 MB default once floors carry many locations
+    # + cells + wall/outline vertices; hitting the cap terminates the
+    # whole `UserSocket` (every channel dies with "Received oversize
+    # fragmented message"), which we saw as constant reconnect loops.
+    websocket: [check_origin: false, max_frame_size: 16_000_000],
     longpoll: false
 
   # Serve at "/" the static files from "priv/static" directory.
