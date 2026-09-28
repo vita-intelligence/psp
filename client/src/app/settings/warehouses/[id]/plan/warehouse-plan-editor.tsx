@@ -1706,14 +1706,22 @@ export function WarehousePlanEditor({
       >();
 
       for (const loc of newRows) {
+        // storage_location.x/y/width/height are `:integer` on the
+        // Phoenix side (cm precision). When snap-to-grid is toggled
+        // off the pointer can leave fractional cm on the local state
+        // (e.g. -527.34); Ecto's integer cast rejects those with
+        // "is invalid" and the FE surfaces the generic
+        // "Please correct the highlighted fields." Round at the API
+        // boundary so free-move placement still saves — cm precision
+        // is already an order of magnitude finer than the 50 cm grid.
         const res = await createLocationAction(warehouseUuid, {
           floor_uuid: state.meta.uuid,
           name: loc.name,
           code: loc.code,
-          x: loc.x,
-          y: loc.y,
-          width: loc.width,
-          height: loc.height,
+          x: Math.round(loc.x),
+          y: Math.round(loc.y),
+          width: Math.round(loc.width),
+          height: Math.round(loc.height),
           width_m: loc.width_m,
           height_m: loc.height_m,
           depth_m: loc.depth_m,
@@ -1742,13 +1750,16 @@ export function WarehousePlanEditor({
 
       const opResults = await Promise.all([
         ...dirtyRows.map((loc) =>
+          // Round for the same reason as createLocationAction above —
+          // snap-off drags can leave fractional cm on the local state
+          // that Ecto's :integer cast would reject.
           updateLocationAction(warehouseUuid, loc.uuid, {
             name: loc.name,
             code: loc.code,
-            x: loc.x,
-            y: loc.y,
-            width: loc.width,
-            height: loc.height,
+            x: Math.round(loc.x),
+            y: Math.round(loc.y),
+            width: Math.round(loc.width),
+            height: Math.round(loc.height),
             width_m: loc.width_m,
             height_m: loc.height_m,
             depth_m: loc.depth_m,
