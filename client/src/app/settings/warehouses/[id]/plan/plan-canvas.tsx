@@ -56,6 +56,7 @@ import type {
   LocationLabelMode,
   PathAnnotation,
   Point,
+  RectAnnotation,
   SelectionItem,
   SelectionSet,
   TextAnnotation,
@@ -70,6 +71,7 @@ interface PlanCanvasProps {
   texts: TextAnnotation[];
   arrows: ArrowAnnotation[];
   paths: PathAnnotation[];
+  rects: RectAnnotation[];
   locations: LocalLocation[];
   selection: SelectionSet;
   tool: ToolMode;
@@ -110,6 +112,20 @@ interface PlanCanvasProps {
   onLocationLabelEdit?: (id: string | number, name: string) => void;
   onArrowAdded: (arrow: ArrowAnnotation) => void;
   onPathAdded: (path: PathAnnotation) => void;
+  /** Commit a freshly-drawn room rectangle. Called when the operator
+   *  releases the drag with the "rect" tool active. */
+  onRectAdd: (rect: RectAnnotation) => void;
+  /** Patch an existing room rectangle in place (e.g. resize during
+   *  a size handle drag). Currently the canvas itself only reads
+   *  positions via `onSelectionMove` — this prop is threaded so the
+   *  parent can pass through the same mutator it hands to the
+   *  properties panel, keeping the API symmetric with the arrow /
+   *  path wiring. */
+  onRectUpdate: (id: string, patch: Partial<RectAnnotation>) => void;
+  /** Delete a room rectangle by id. Same threading rationale as
+   *  `onRectUpdate` — canvas does not delete internally, but the
+   *  prop exists so the parent can pass through consistently. */
+  onRectDelete: (id: string) => void;
   /** Translate every selected item by (dx, dy) cm in one snapshot.
    *  Fires once on drag end for the wall / location the user grabbed;
    *  the parent applies the delta to every selected item so a group
@@ -160,6 +176,7 @@ const DRAW_TOOLS = new Set<ToolMode>([
   "path",
   "outline",
   "hole",
+  "rect",
 ]);
 
 type Draft =
@@ -175,6 +192,13 @@ type Draft =
     }
   | {
       kind: "text";
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }
+  | {
+      kind: "rect";
       x: number;
       y: number;
       width: number;
@@ -217,6 +241,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       texts,
       arrows,
       paths,
+      rects,
       locations,
       selection,
       tool,
@@ -234,6 +259,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       onTextEdit,
       onArrowAdded,
       onPathAdded,
+      onRectAdd,
       onSelectionMove,
       onOutlineCommitted,
       onHoleCommitted,
@@ -436,6 +462,17 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
             width: DEFAULT_TEXT_WIDTH_CM,
             height: DEFAULT_TEXT_HEIGHT_CM,
           });
+        } else if (tool === "rect" && isBackground) {
+          // Room / zone rectangle. Same click-drag interaction as
+          // location + text. Starts as a zero-size box at the pointer
+          // and grows on updateDraw as the operator drags.
+          setDraft({
+            kind: "rect",
+            x: p.x,
+            y: p.y,
+            width: 0,
+            height: 0,
+          });
         } else if (tool === "path" && isBackground) {
           // Multi-vertex polyline. Each click extends the draft;
           // double-click on the stage commits via dblCommitDraft.
@@ -521,6 +558,15 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
           width: Math.max(GRID_MINOR_CM, p.x - draft.x),
           height: Math.max(GRID_MINOR_CM, p.y - draft.y),
         });
+      } else if (draft.kind === "rect") {
+        // Allow drag in any direction — normaliseRect on commit
+        // flips negative width/height back to a positive top-left
+        // rectangle so the persisted shape is always canonical.
+        setDraft({
+          ...draft,
+          width: p.x - draft.x,
+          height: p.y - draft.y,
+        });
       }
     }, [draft, tool, viewport.scale]);
 
@@ -576,6 +622,26 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
         setDraft(null);
         return;
       }
+      if (draft.kind === "rect") {
+        // Normalise so a drag started at any corner still produces a
+        // top-left-origin rectangle. Enforce a minimum size — a
+        // zero-width click on the "rect" tool is treated as a
+        // cancelled draft (avoid stray 0×0 rooms in canvas_json).
+        const box = normaliseRect(draft.x, draft.y, draft.width, draft.height);
+        if (box.width < GRID_MINOR_CM && box.height < GRID_MINOR_CM) {
+          setDraft(null);
+          return;
+        }
+        onRectAdd({
+          id: `rect_${crypto.randomUUID()}`,
+          x: box.x,
+          y: box.y,
+          width: Math.max(GRID_MINOR_CM, box.width),
+          height: Math.max(GRID_MINOR_CM, box.height),
+        });
+        setDraft(null);
+        return;
+      }
       if (draft.kind === "marquee") {
         const box = normaliseRect(
           draft.x1,
@@ -599,6 +665,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
           texts,
           arrows,
           paths,
+          rects,
         );
         onSelectionChange(
           draft.additive ? mergeSelections(selection, found) : found,
@@ -614,6 +681,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       onArrowAdded,
       onLocationAdded,
       onTextAdded,
+      onRectAdd,
       onSelectionChange,
       selection,
       walls,
@@ -622,6 +690,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       texts,
       arrows,
       paths,
+      rects,
       viewport.scale,
     ]);
 
@@ -1012,6 +1081,22 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
             </Layer>
           )}
 
+          {/* Room / zone rectangles — sit on the floor but under the
+              walls so a wall dividing two rooms visibly separates
+              the two coloured areas. */}
+          <Layer>
+            {rects.map((r) => (
+              <RectShape
+                key={r.id}
+                rect={r}
+                selected={isSelected(selection, { kind: "rect", id: r.id })}
+                readOnly={readOnly}
+                onSelect={(e) => selectItem({ kind: "rect", id: r.id }, e)}
+                onGroupMove={onSelectionMove}
+              />
+            ))}
+          </Layer>
+
           {/* Walls */}
           <Layer>
             {walls.map((wall) => (
@@ -1140,6 +1225,18 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                 height={Math.abs(draft.height)}
                 fill="rgba(59,130,246,0.08)"
                 stroke="rgb(59,130,246)"
+                strokeWidth={2}
+                dash={[6, 4]}
+              />
+            )}
+            {draft?.kind === "rect" && (
+              <Rect
+                x={Math.min(draft.x, draft.x + draft.width)}
+                y={Math.min(draft.y, draft.y + draft.height)}
+                width={Math.abs(draft.width)}
+                height={Math.abs(draft.height)}
+                fill="rgba(99,102,241,0.15)"
+                stroke="rgb(99,102,241)"
                 strokeWidth={2}
                 dash={[6, 4]}
               />
@@ -2051,6 +2148,101 @@ const ArrowShape = memo(function ArrowShape({
       onDragEnd={draggable ? handleDragEnd : undefined}
       {...selectionShadow}
     />
+  );
+});
+
+const RectShape = memo(function RectShape({
+  rect,
+  selected,
+  readOnly,
+  onSelect,
+  onGroupMove,
+}: {
+  rect: RectAnnotation;
+  selected: boolean;
+  readOnly: boolean;
+  onSelect: SelectHandler;
+  /** Fire on drag end — the canvas-level handler applies the
+   *  snapped (dx, dy) to every selected item so a rect drag can
+   *  ride a multi-select group move as a single undo step. */
+  onGroupMove: (dx: number, dy: number) => void;
+}) {
+  const hasFill = isHexColor(rect.fill);
+  // Light indigo default matches the RectBody defaultColor + gives
+  // freshly-drawn rooms a visible-but-neutral tint without dominating
+  // the walls / racks on top.
+  const fill = hasFill ? rect.fill : "#eef2ff";
+  const hasStroke = isHexColor(rect.stroke);
+  // When the operator hasn't picked a border colour we skip the
+  // stroke entirely so the room reads as a flat colour patch. When
+  // selected we always paint a blue outline so the user can see
+  // what's picked even for un-bordered rooms.
+  const stroke = selected
+    ? "rgb(59,130,246)"
+    : hasStroke
+      ? rect.stroke
+      : "transparent";
+  const strokeWidth = selected ? 3 : hasStroke ? 2 : 0;
+  const draggable = !readOnly && selected;
+  const selectionShadow = selected
+    ? {
+        shadowColor: "rgb(59,130,246)",
+        shadowBlur: 10,
+        shadowOpacity: 0.9,
+        shadowEnabled: true,
+      }
+    : { shadowEnabled: false };
+  const hasLabel = typeof rect.name === "string" && rect.name.trim().length > 0;
+  // Label sized relative to the smaller dimension so a tall skinny
+  // room still gets a legible label. Capped so a giant warehouse
+  // room doesn't render a billboard-sized string.
+  const labelFontSize = Math.max(
+    16,
+    Math.min(80, Math.min(rect.width, rect.height) * 0.12),
+  );
+
+  return (
+    <Group
+      x={rect.x}
+      y={rect.y}
+      draggable={draggable}
+      dragBoundFunc={draggable ? gridSnapDragBound : undefined}
+      onClick={readOnly ? undefined : onSelect}
+      onTap={readOnly ? undefined : onSelect}
+      onDragEnd={(e) => {
+        const node = e.target;
+        const nx = snapCm(node.x());
+        const ny = snapCm(node.y());
+        node.position({ x: nx, y: ny });
+        const dx = nx - rect.x;
+        const dy = ny - rect.y;
+        if (dx !== 0 || dy !== 0) onGroupMove(dx, dy);
+      }}
+    >
+      <Rect
+        width={rect.width}
+        height={rect.height}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={strokeWidth}
+        {...selectionShadow}
+      />
+      {hasLabel && (
+        <Text
+          text={rect.name!}
+          x={0}
+          y={rect.height / 2 - labelFontSize / 2}
+          width={rect.width}
+          fontSize={labelFontSize}
+          fontStyle="600"
+          fill="rgba(15,23,42,0.85)"
+          align="center"
+          listening={false}
+          ellipsis
+          wrap="none"
+        />
+      )}
+    </Group>
   );
 });
 

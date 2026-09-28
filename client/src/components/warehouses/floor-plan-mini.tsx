@@ -27,9 +27,25 @@ interface FloorOutline {
   points: { x: number; y: number }[];
 }
 
+/** Room / zone rectangle. Same shape as the plan editor's
+ *  RectAnnotation — kept as a local subset so the mini-map doesn't
+ *  pull the whole plan-types module (and its react-konva-heavy
+ *  neighbours) into shared bundles. */
+interface RectAnnotation {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fill?: string;
+  stroke?: string;
+  name?: string;
+}
+
 interface CanvasJson {
   outline?: FloorOutline;
   walls?: Wall[];
+  rects?: RectAnnotation[];
 }
 
 interface FloorPlan {
@@ -116,8 +132,14 @@ export function FloorPlanMini({
 
   const outline = data.floor.canvas_json?.outline?.points ?? [];
   const walls = data.floor.canvas_json?.walls ?? [];
+  const rects = data.floor.canvas_json?.rects ?? [];
 
-  if (data.locations.length === 0 && outline.length === 0 && walls.length === 0) {
+  if (
+    data.locations.length === 0 &&
+    outline.length === 0 &&
+    walls.length === 0 &&
+    rects.length === 0
+  ) {
     return (
       <div className="flex h-32 items-center justify-center rounded-lg border border-dashed border-border/60 text-xs text-muted-foreground">
         No floor plan drawn yet.
@@ -140,6 +162,10 @@ export function FloorPlanMini({
   walls.forEach((w) => {
     xs.push(w.x1, w.x2);
     ys.push(w.y1, w.y2);
+  });
+  rects.forEach((r) => {
+    xs.push(r.x, r.x + r.width);
+    ys.push(r.y, r.y + r.height);
   });
 
   const PAD = 80;
@@ -169,6 +195,23 @@ export function FloorPlanMini({
             strokeLinejoin="round"
           />
         )}
+
+        {/* Room / zone shading — sits above the outline fill but
+            under the walls so a wall dividing two rooms visibly
+            separates the two colours. Purely decorative — no
+            hit-testing needed on the mini-map. */}
+        {rects.map((r) => (
+          <rect
+            key={r.id}
+            x={r.x}
+            y={r.y}
+            width={r.width}
+            height={r.height}
+            fill={r.fill ?? "#eef2ff"}
+            stroke={r.stroke ?? "none"}
+            strokeWidth={r.stroke ? Math.max(2, vbW / 320) : 0}
+          />
+        ))}
 
         {walls.map((w) => (
           <line

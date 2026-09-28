@@ -8,6 +8,7 @@ import type {
   LocalLocation,
   PathAnnotation,
   Point,
+  RectAnnotation,
   SelectionItem,
   SelectionSet,
   SnapTarget,
@@ -576,6 +577,7 @@ export function itemsInMarquee(
   texts: TextAnnotation[] = [],
   arrows: ArrowAnnotation[] = [],
   paths: PathAnnotation[] = [],
+  rects: RectAnnotation[] = [],
 ): SelectionSet {
   const out: SelectionSet = [];
 
@@ -628,6 +630,14 @@ export function itemsInMarquee(
     const pb = polygonBbox(p.points);
     if (pb && bboxOverlap(box, pb)) {
       out.push({ kind: "path", id: p.id });
+    }
+  }
+
+  for (const r of rects) {
+    if (
+      bboxOverlap(box, { x: r.x, y: r.y, width: r.width, height: r.height })
+    ) {
+      out.push({ kind: "rect", id: r.id });
     }
   }
 

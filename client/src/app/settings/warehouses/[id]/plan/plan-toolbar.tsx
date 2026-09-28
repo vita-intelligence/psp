@@ -13,6 +13,7 @@ import {
   MousePointer2,
   PackageOpen,
   Route,
+  Square,
   Type,
   ZoomIn,
   ZoomOut,
@@ -47,9 +48,12 @@ const TOOLS: ToolDef[] = [
   { id: "outline", label: "Floor outline", icon: Frame, shortcut: "F" },
   { id: "hole", label: "Cut a hole", icon: CircleDashed, shortcut: "O" },
   { id: "location", label: "Storage location", icon: PackageOpen, shortcut: "L" },
+  { id: "rect", label: "Room / zone", icon: Square, shortcut: "R" },
   { id: "text", label: "Text", icon: Type, shortcut: "T" },
   { id: "arrow", label: "Arrow", icon: ArrowUpRight, shortcut: "A" },
-  { id: "path", label: "Path / route", icon: Route, shortcut: "R" },
+  // `P` (path) so `R` can go to the room tool per the annotation
+  // brief — moved from the historical `R` binding.
+  { id: "path", label: "Path / route", icon: Route, shortcut: "P" },
 ];
 
 /**

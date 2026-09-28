@@ -111,6 +111,31 @@ export interface ArrowAnnotation {
   color?: string;
 }
 
+/** Filled rectangle annotation — used to mark a room, zone, or
+ *  coloured area on the plan. Purely visual: it doesn't influence
+ *  cell purposes, RBAC, goods-in flows or stock movement, just the
+ *  render. Same annotation lives in the mini-map so an operator
+ *  looking at a lot placement sees the same room shading as the
+ *  plan editor.
+ *
+ *  Stored as top-left origin + size (matches how TextAnnotation
+ *  encodes its box). Coordinates are canvas-space centimetres,
+ *  the same as every other primitive.
+ */
+export interface RectAnnotation {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** `#RRGGBB` fill colour. undefined = a neutral default. */
+  fill?: string;
+  /** `#RRGGBB` border colour. undefined = no border. */
+  stroke?: string;
+  /** Optional room / zone label rendered at the rect's centre. */
+  name?: string;
+}
+
 /** Path / route annotation — a multi-segment polyline. Used for
  *  marking forklift routes, walking lanes, emergency exits, loading
  *  flows. `width_m` is the physical lane width in metres so a wide
@@ -140,6 +165,7 @@ export interface CanvasJson {
   texts?: TextAnnotation[];
   arrows?: ArrowAnnotation[];
   paths?: PathAnnotation[];
+  rects?: RectAnnotation[];
 }
 
 export type ToolMode =
@@ -151,7 +177,8 @@ export type ToolMode =
   | "location"
   | "text"
   | "arrow"
-  | "path";
+  | "path"
+  | "rect";
 
 /** One selected element. The outline is a singleton per floor so it
  *  has no id; everything else is addressable. `outline-edge` and
@@ -167,7 +194,8 @@ export type SelectionItem =
   | { kind: "location"; id: string }
   | { kind: "text"; id: string }
   | { kind: "arrow"; id: string }
-  | { kind: "path"; id: string };
+  | { kind: "path"; id: string }
+  | { kind: "rect"; id: string };
 
 /** The editor's selection is a SET — shift / ctrl / cmd clicking adds
  *  to it, marquee-drag adds anything intersecting the box, a plain

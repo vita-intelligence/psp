@@ -27,6 +27,7 @@ import type {
   LocalLocation,
   PathAnnotation,
   Point,
+  RectAnnotation,
   SelectionItem,
   SelectionSet,
   TextAnnotation,
@@ -59,6 +60,7 @@ interface PlanPropertiesProps {
   texts: TextAnnotation[];
   arrows: ArrowAnnotation[];
   paths: PathAnnotation[];
+  rects: RectAnnotation[];
   locations: LocalLocation[];
   /** Parent warehouse uuid — needed by the LocationBody to open the
    *  Cells dialog (which calls server actions scoped to the
@@ -85,6 +87,8 @@ interface PlanPropertiesProps {
   onArrowDelete: (id: string) => void;
   onPathUpdate: (id: string, patch: Partial<PathAnnotation>) => void;
   onPathDelete: (id: string) => void;
+  onRectUpdate: (id: string, patch: Partial<RectAnnotation>) => void;
+  onRectDelete: (id: string) => void;
   onSelectionColor: (color: string | null) => void;
   onLocationUpdate: (
     id: string | number,
@@ -113,6 +117,7 @@ export function PlanProperties(props: PlanPropertiesProps) {
     texts,
     arrows,
     paths,
+    rects,
     locations,
     readOnly,
     layout = "side",
@@ -130,6 +135,8 @@ export function PlanProperties(props: PlanPropertiesProps) {
     onArrowDelete,
     onPathUpdate,
     onPathDelete,
+    onRectUpdate,
+    onRectDelete,
     onSelectionColor,
     onLocationUpdate,
     onLocationDelete,
@@ -300,6 +307,17 @@ export function PlanProperties(props: PlanPropertiesProps) {
           onDelete={() => onPathDelete(path.id)}
         />
       ) : null;
+    } else if (item.kind === "rect") {
+      const rect = rects.find((r) => r.id === item.id);
+      title = "Room / zone";
+      body = rect ? (
+        <RectBody
+          rect={rect}
+          readOnly={readOnly}
+          onUpdate={(patch) => onRectUpdate(rect.id, patch)}
+          onDelete={() => onRectDelete(rect.id)}
+        />
+      ) : null;
     } else {
       const location = locations.find(
         (l) => (l.tempId ?? l.uuid) === item.id,
@@ -357,7 +375,8 @@ function MultiSelectBody({
       s.kind === "location" ||
       s.kind === "text" ||
       s.kind === "arrow" ||
-      s.kind === "path",
+      s.kind === "path" ||
+      s.kind === "rect",
   ).length;
   // Count by kind for the breakdown badge row.
   const counts = selection.reduce(
@@ -377,6 +396,7 @@ function MultiSelectBody({
     text: "texts",
     arrow: "arrows",
     path: "paths",
+    rect: "rooms",
   };
   return (
     <div className="space-y-3 text-xs">
@@ -1553,6 +1573,112 @@ function ArrowBody({
           >
             <Trash2 className="mr-1.5 size-3.5" />
             Delete arrow
+          </Button>
+        )}
+      </div>
+    </fieldset>
+  );
+}
+
+function RectBody({
+  rect,
+  readOnly,
+  onUpdate,
+  onDelete,
+}: {
+  rect: RectAnnotation;
+  readOnly: boolean;
+  onUpdate: (patch: Partial<RectAnnotation>) => void;
+  onDelete: () => void;
+}) {
+  return (
+    <fieldset disabled={readOnly} className="contents">
+      <div className="space-y-3">
+        <div className="space-y-1">
+          <Label htmlFor="rect-name" className="text-xs">
+            Label
+          </Label>
+          <Input
+            id="rect-name"
+            value={rect.name ?? ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              onUpdate({ name: v.length === 0 ? undefined : v });
+            }}
+            placeholder="Room name (optional)"
+            className="h-8 text-xs"
+          />
+        </div>
+        <Row label="Position (m)">
+          <div className="grid grid-cols-2 gap-1.5">
+            <MetresInput
+              valueCm={rect.x}
+              onChange={(cm) => cm !== null && onUpdate({ x: cm })}
+              placeholder="X"
+            />
+            <MetresInput
+              valueCm={rect.y}
+              onChange={(cm) => cm !== null && onUpdate({ y: cm })}
+              placeholder="Y"
+            />
+          </div>
+        </Row>
+        <Row label="Size (m)">
+          <div className="grid grid-cols-2 gap-1.5">
+            <MetresInput
+              valueCm={rect.width}
+              onChange={(cm) => {
+                // Size must always be positive — negatives / zero would
+                // collapse the room into an unpickable line. Clamp to
+                // the visible half-metre grid.
+                if (cm !== null && cm > 0) onUpdate({ width: cm });
+              }}
+              placeholder="W"
+            />
+            <MetresInput
+              valueCm={rect.height}
+              onChange={(cm) => {
+                if (cm !== null && cm > 0) onUpdate({ height: cm });
+              }}
+              placeholder="H"
+            />
+          </div>
+        </Row>
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Fill colour
+          </div>
+          <ColorPicker
+            value={rect.fill ?? null}
+            defaultColor="#eef2ff"
+            readOnly={readOnly}
+            onChange={(c) =>
+              onUpdate({ fill: c === null ? undefined : c })
+            }
+          />
+        </div>
+        <div className="space-y-1.5">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Border colour
+          </div>
+          <ColorPicker
+            value={rect.stroke ?? null}
+            readOnly={readOnly}
+            onChange={(c) =>
+              onUpdate({ stroke: c === null ? undefined : c })
+            }
+          />
+        </div>
+        {!readOnly && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onDelete}
+            className="w-full justify-start text-destructive hover:text-destructive"
+          >
+            <Trash2 className="mr-1.5 size-3.5" />
+            Delete room
           </Button>
         )}
       </div>

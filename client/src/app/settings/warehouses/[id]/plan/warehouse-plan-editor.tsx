@@ -56,6 +56,7 @@ import type {
   LocationLabelMode,
   PathAnnotation,
   Point,
+  RectAnnotation,
   SelectionSet,
   TextAnnotation,
   ToolMode,
@@ -119,6 +120,7 @@ interface FloorState {
   texts: TextAnnotation[];
   arrows: ArrowAnnotation[];
   paths: PathAnnotation[];
+  rects: RectAnnotation[];
   locations: LocalLocation[];
   viewport: Viewport;
   /** True when canvas_json or any location row has been touched. */
@@ -131,6 +133,7 @@ interface HistoryEntry {
   texts: TextAnnotation[];
   arrows: ArrowAnnotation[];
   paths: PathAnnotation[];
+  rects: RectAnnotation[];
   locations: LocalLocation[];
 }
 
@@ -149,6 +152,7 @@ function buildFloorState(meta: Floor): FloorState {
     texts: canvas.texts ?? [],
     arrows: canvas.arrows ?? [],
     paths: canvas.paths ?? [],
+    rects: canvas.rects ?? [],
     locations,
     viewport: canvas.viewport ?? DEFAULT_VIEWPORT,
     dirty: false,
@@ -426,6 +430,7 @@ export function WarehousePlanEditor({
           texts?: TextAnnotation[];
           arrows?: ArrowAnnotation[];
           paths?: PathAnnotation[];
+          rects?: RectAnnotation[];
           locations?: LocalLocation[];
         };
         applyingRemoteRef.current = true;
@@ -438,6 +443,7 @@ export function WarehousePlanEditor({
             texts: c.texts ?? current.texts,
             arrows: c.arrows ?? current.arrows,
             paths: c.paths ?? current.paths,
+            rects: c.rects ?? current.rects,
             // Storage locations now ride the realtime channel too so
             // a peer dragging a rack, recolouring it, or retagging it
             // shows up live instead of waiting for save+invalidate.
@@ -469,6 +475,7 @@ export function WarehousePlanEditor({
           texts: s.texts,
           arrows: s.arrows,
           paths: s.paths,
+          rects: s.rects,
           // Locations + cells too so a late joiner sees unsaved
           // drags / colour changes / tag edits — not just the
           // architectural layer.
@@ -496,6 +503,7 @@ export function WarehousePlanEditor({
             texts?: TextAnnotation[];
             arrows?: ArrowAnnotation[];
             paths?: PathAnnotation[];
+            rects?: RectAnnotation[];
             locations?: LocalLocation[];
           };
           applyingRemoteRef.current = true;
@@ -508,6 +516,7 @@ export function WarehousePlanEditor({
               texts: c.texts ?? current.texts,
               arrows: c.arrows ?? current.arrows,
               paths: c.paths ?? current.paths,
+              rects: c.rects ?? current.rects,
               locations: c.locations ?? current.locations,
             },
           };
@@ -548,6 +557,7 @@ export function WarehousePlanEditor({
     texts: TextAnnotation[];
     arrows: ArrowAnnotation[];
     paths: PathAnnotation[];
+    rects: RectAnnotation[];
     locations: LocalLocation[];
   } | null>(null);
 
@@ -564,6 +574,7 @@ export function WarehousePlanEditor({
         texts: activeFloor.texts,
         arrows: activeFloor.arrows,
         paths: activeFloor.paths,
+        rects: activeFloor.rects,
         locations: activeFloor.locations,
       };
       return;
@@ -577,6 +588,7 @@ export function WarehousePlanEditor({
       last.texts === activeFloor.texts &&
       last.arrows === activeFloor.arrows &&
       last.paths === activeFloor.paths &&
+      last.rects === activeFloor.rects &&
       last.locations === activeFloor.locations
     ) {
       return;
@@ -588,6 +600,7 @@ export function WarehousePlanEditor({
       texts: activeFloor.texts,
       arrows: activeFloor.arrows,
       paths: activeFloor.paths,
+      rects: activeFloor.rects,
       locations: activeFloor.locations,
     };
     // Skip the very first observation per floor — that's just the
@@ -599,6 +612,7 @@ export function WarehousePlanEditor({
       texts: activeFloor.texts,
       arrows: activeFloor.arrows,
       paths: activeFloor.paths,
+      rects: activeFloor.rects,
       locations: activeFloor.locations,
     });
   }, [
@@ -608,6 +622,7 @@ export function WarehousePlanEditor({
     activeFloor?.texts,
     activeFloor?.arrows,
     activeFloor?.paths,
+    activeFloor?.rects,
     activeFloor?.locations,
     activeFloor,
     broadcastCanvas,
@@ -625,6 +640,7 @@ export function WarehousePlanEditor({
         texts: state.texts,
         arrows: state.arrows,
         paths: state.paths,
+        rects: state.rects,
         locations: state.locations,
       };
       const next = [...stack, entry].slice(-HISTORY_LIMIT);
@@ -755,6 +771,39 @@ export function WarehousePlanEditor({
     [updateActiveFloor],
   );
 
+  const onRectAdd = useCallback(
+    (rect: RectAnnotation) => {
+      updateActiveFloor(
+        (s) => ({ ...s, rects: [...s.rects, rect] }),
+        { snapshot: true },
+      );
+      setTool("select");
+      setSelection([{ kind: "rect", id: rect.id }]);
+    },
+    [updateActiveFloor],
+  );
+
+  const onRectUpdate = useCallback(
+    (id: string, patch: Partial<RectAnnotation>) => {
+      updateActiveFloor((s) => ({
+        ...s,
+        rects: s.rects.map((r) => (r.id === id ? { ...r, ...patch } : r)),
+      }));
+    },
+    [updateActiveFloor],
+  );
+
+  const onRectDelete = useCallback(
+    (id: string) => {
+      updateActiveFloor(
+        (s) => ({ ...s, rects: s.rects.filter((r) => r.id !== id) }),
+        { snapshot: true },
+      );
+      setSelection([]);
+    },
+    [updateActiveFloor],
+  );
+
   const onPathUpdate = useCallback(
     (id: string, patch: Partial<PathAnnotation>) => {
       updateActiveFloor((s) => ({
@@ -860,6 +909,11 @@ export function WarehousePlanEditor({
               .filter((it): it is { kind: "path"; id: string } => it.kind === "path")
               .map((it) => it.id),
           );
+          const rectIds = new Set(
+            selection
+              .filter((it): it is { kind: "rect"; id: string } => it.kind === "rect")
+              .map((it) => it.id),
+          );
           const outlineSelected = selection.some((it) => it.kind === "outline");
 
           const walls = wallIds.size
@@ -912,6 +966,12 @@ export function WarehousePlanEditor({
               )
             : s.paths;
 
+          const rects = rectIds.size
+            ? s.rects.map((r) =>
+                rectIds.has(r.id) ? { ...r, x: r.x + dx, y: r.y + dy } : r,
+              )
+            : s.rects;
+
           let outline = s.outline;
           if (outline && (outlineSelected || holeIds.size)) {
             outline = {
@@ -927,7 +987,7 @@ export function WarehousePlanEditor({
             };
           }
 
-          return { ...s, walls, locations, texts, arrows, paths, outline };
+          return { ...s, walls, locations, texts, arrows, paths, rects, outline };
         },
         { snapshot: true },
       );
@@ -1222,6 +1282,11 @@ export function WarehousePlanEditor({
               .filter((it): it is { kind: "path"; id: string } => it.kind === "path")
               .map((it) => it.id),
           );
+          const rectIds = new Set(
+            selection
+              .filter((it): it is { kind: "rect"; id: string } => it.kind === "rect")
+              .map((it) => it.id),
+          );
           const outlineSelected = selection.some((it) => it.kind === "outline");
 
           const walls = wallIds.size
@@ -1256,6 +1321,15 @@ export function WarehousePlanEditor({
               )
             : s.paths;
 
+          // Painting a room applies to the FILL colour (the visible
+          // area), not the border. Border colour has its own control
+          // in the RectBody properties panel.
+          const rects = rectIds.size
+            ? s.rects.map((r) =>
+                rectIds.has(r.id) ? { ...r, fill: cMaybe } : r,
+              )
+            : s.rects;
+
           let outline = s.outline;
           if (outline && (outlineSelected || holeIds.size)) {
             outline = {
@@ -1267,7 +1341,7 @@ export function WarehousePlanEditor({
             };
           }
 
-          return { ...s, walls, locations, texts, arrows, paths, outline };
+          return { ...s, walls, locations, texts, arrows, paths, rects, outline };
         },
         { snapshot: true },
       );
@@ -1334,6 +1408,11 @@ export function WarehousePlanEditor({
             .filter((it): it is { kind: "path"; id: string } => it.kind === "path")
             .map((it) => it.id),
         );
+        const rectIds = new Set(
+          selection
+            .filter((it): it is { kind: "rect"; id: string } => it.kind === "rect")
+            .map((it) => it.id),
+        );
         const dropOutline = selection.some((it) => it.kind === "outline");
 
         return {
@@ -1352,6 +1431,7 @@ export function WarehousePlanEditor({
           texts: s.texts.filter((t) => !textIds.has(t.id)),
           arrows: s.arrows.filter((a) => !arrowIds.has(a.id)),
           paths: s.paths.filter((p) => !pathIds.has(p.id)),
+          rects: s.rects.filter((r) => !rectIds.has(r.id)),
           locations: s.locations.map((l) => {
             const id = l.tempId ?? l.uuid;
             if (!locationIds.has(id)) return l;
@@ -1386,6 +1466,7 @@ export function WarehousePlanEditor({
             texts: current.texts,
             arrows: current.arrows,
             paths: current.paths,
+            rects: current.rects,
             locations: current.locations,
           },
         ],
@@ -1399,6 +1480,7 @@ export function WarehousePlanEditor({
           texts: last.texts,
           arrows: last.arrows,
           paths: last.paths,
+          rects: last.rects,
           locations: last.locations,
           dirty: true,
         },
@@ -1426,6 +1508,7 @@ export function WarehousePlanEditor({
             texts: current.texts,
             arrows: current.arrows,
             paths: current.paths,
+            rects: current.rects,
             locations: current.locations,
           },
         ],
@@ -1439,6 +1522,7 @@ export function WarehousePlanEditor({
           texts: last.texts,
           arrows: last.arrows,
           paths: last.paths,
+          rects: last.rects,
           locations: last.locations,
           dirty: true,
         },
@@ -1501,6 +1585,9 @@ export function WarehousePlanEditor({
           setTool("arrow");
           break;
         case "r":
+          setTool("rect");
+          break;
+        case "p":
           setTool("path");
           break;
         case "escape":
@@ -1530,6 +1617,7 @@ export function WarehousePlanEditor({
       texts: s.texts.length > 0 ? s.texts : undefined,
       arrows: s.arrows.length > 0 ? s.arrows : undefined,
       paths: s.paths.length > 0 ? s.paths : undefined,
+      rects: s.rects.length > 0 ? s.rects : undefined,
     };
   }, []);
 
@@ -2043,6 +2131,9 @@ export function WarehousePlanEditor({
           onTextEdit={(id, content) => onTextUpdate(id, { text: content })}
           onArrowAdded={onArrowAdded}
           onPathAdded={onPathAdded}
+          onRectAdd={onRectAdd}
+          onRectUpdate={onRectUpdate}
+          onRectDelete={onRectDelete}
           onSelectionMove={onSelectionMove}
           onCursorMove={onCanvasCursorMove}
           onCursorLeave={liveHideCursor}
@@ -2080,6 +2171,7 @@ export function WarehousePlanEditor({
               texts={activeFloor.texts}
               arrows={activeFloor.arrows}
               paths={activeFloor.paths}
+              rects={activeFloor.rects}
               locations={activeFloor.locations}
               selection={selection}
               tool={tool}
@@ -2097,6 +2189,9 @@ export function WarehousePlanEditor({
               onTextEdit={(id, content) => onTextUpdate(id, { text: content })}
               onArrowAdded={onArrowAdded}
               onPathAdded={onPathAdded}
+              onRectAdd={onRectAdd}
+              onRectUpdate={onRectUpdate}
+              onRectDelete={onRectDelete}
               onSelectionMove={onSelectionMove}
               onCursorMove={onCanvasCursorMove}
               onCursorLeave={liveHideCursor}
@@ -2174,6 +2269,7 @@ export function WarehousePlanEditor({
                 texts={activeFloor?.texts ?? []}
                 arrows={activeFloor?.arrows ?? []}
                 paths={activeFloor?.paths ?? []}
+                rects={activeFloor?.rects ?? []}
                 locations={activeFloor?.locations ?? []}
                 warehouseUuid={warehouseUuid}
                 storageTags={storageTags}
@@ -2193,6 +2289,8 @@ export function WarehousePlanEditor({
                 onArrowDelete={onArrowDelete}
                 onPathUpdate={onPathUpdate}
                 onPathDelete={onPathDelete}
+                onRectUpdate={onRectUpdate}
+                onRectDelete={onRectDelete}
                 onLocationUpdate={onLocationUpdate}
                 onLocationDelete={onLocationDelete}
                 onSelectionColor={onSelectionColor}
@@ -2287,6 +2385,9 @@ interface MobileLayoutProps {
   onTextEdit: (id: string, text: string) => void;
   onArrowAdded: (arrow: ArrowAnnotation) => void;
   onPathAdded: (path: PathAnnotation) => void;
+  onRectAdd: (rect: RectAnnotation) => void;
+  onRectUpdate: (id: string, patch: Partial<RectAnnotation>) => void;
+  onRectDelete: (id: string) => void;
   onSelectionMove: (dx: number, dy: number) => void;
   onCursorMove: (worldX: number, worldY: number) => void;
   onCursorLeave: () => void;
@@ -2344,6 +2445,9 @@ const MobileLayout = memo(function MobileLayout({
   onTextEdit,
   onArrowAdded,
   onPathAdded,
+  onRectAdd,
+  onRectUpdate,
+  onRectDelete,
   onSelectionMove,
   onCursorMove,
   onCursorLeave,
@@ -2400,6 +2504,7 @@ const MobileLayout = memo(function MobileLayout({
             texts={activeFloor.texts}
             arrows={activeFloor.arrows}
             paths={activeFloor.paths}
+            rects={activeFloor.rects}
             locations={activeFloor.locations}
             selection={selection}
             tool={tool}
@@ -2417,6 +2522,9 @@ const MobileLayout = memo(function MobileLayout({
             onTextEdit={onTextEdit}
             onArrowAdded={onArrowAdded}
             onPathAdded={onPathAdded}
+            onRectAdd={onRectAdd}
+            onRectUpdate={onRectUpdate}
+            onRectDelete={onRectDelete}
             onSelectionMove={onSelectionMove}
             onCursorMove={onCursorMove}
             onCursorLeave={onCursorLeave}
@@ -2475,7 +2583,9 @@ const MobileLayout = memo(function MobileLayout({
                               ? "Arrow"
                               : selection[0]!.kind === "path"
                                 ? "Path / route"
-                                : "Storage location"}
+                                : selection[0]!.kind === "rect"
+                                  ? "Room / zone"
+                                  : "Storage location"}
             </p>
             <Button
               type="button"
@@ -2496,6 +2606,7 @@ const MobileLayout = memo(function MobileLayout({
               texts={activeFloor.texts}
               arrows={activeFloor.arrows}
               paths={activeFloor.paths}
+              rects={activeFloor.rects}
               locations={activeFloor.locations}
               warehouseUuid={warehouseUuid}
               storageTags={storageTags}
@@ -2515,6 +2626,8 @@ const MobileLayout = memo(function MobileLayout({
               onArrowDelete={onArrowDelete}
               onPathUpdate={onPathUpdate}
               onPathDelete={onPathDelete}
+              onRectUpdate={onRectUpdate}
+              onRectDelete={onRectDelete}
               onLocationUpdate={onLocationUpdate}
               onLocationDelete={onLocationDelete}
               onSelectionColor={onSelectionColor}
@@ -2702,9 +2815,10 @@ function KeyboardShortcutsOverlay({
           muted: !hasOutline,
         },
         { keys: ["L"], label: "Storage location" },
+        { keys: ["R"], label: "Room / zone" },
         { keys: ["T"], label: "Text" },
         { keys: ["A"], label: "Arrow" },
-        { keys: ["R"], label: "Path / route" },
+        { keys: ["P"], label: "Path / route" },
       ],
     },
     {
