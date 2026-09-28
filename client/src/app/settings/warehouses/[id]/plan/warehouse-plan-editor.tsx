@@ -42,6 +42,7 @@ import {
   deleteLocationAction,
   updateLocationAction,
 } from "@/lib/storage-locations/actions";
+import { createCellAction } from "@/lib/storage-cells/actions";
 import { patchFloorCanvasAction } from "@/lib/floors/actions";
 import { invalidateAudit } from "@/lib/audit/invalidator";
 import type { Floor, StorageTag, WarehouseReadiness } from "@/lib/types";
@@ -1505,6 +1506,44 @@ export function WarehousePlanEditor({
             (l) => (l.tempId ?? l.uuid) === item.id,
           );
           if (!loc || loc.deleted) break;
+          // Snapshot every cell the operator can edit — the paste
+          // flow re-POSTs these against the pasted location's fresh
+          // uuid so shelves / levels ride along with the copy instead
+          // of dropping on the floor. Server-owned fields (`id`,
+          // `uuid`, `storage_location_id`, timestamps, audit actors)
+          // are dropped; the create endpoint doesn't accept them and
+          // the server will mint new ones on POST. Ordinal is
+          // preserved so the pasted stack keeps the same
+          // bottom-to-top order as the source.
+          //
+          // If the operator pasted a location that still has
+          // `pendingCells` queued (i.e. copy → paste → copy again
+          // before the first paste hit the wire), fall back to those
+          // — the local `cells` array is empty until the save round-
+          // trip completes.
+          const sourceCells = (loc.cells?.length ?? 0) > 0
+            ? loc.cells.map((c) => ({
+                ordinal: c.ordinal,
+                name: c.name,
+                width_m: c.width_m,
+                depth_m: c.depth_m,
+                height_m: c.height_m,
+                max_weight_kg: c.max_weight_kg,
+                tags: [...(c.tags ?? [])],
+                purpose: c.purpose,
+                notes: c.notes,
+              }))
+            : (loc.pendingCells ?? []).map((c) => ({
+                ordinal: c.ordinal,
+                name: c.name,
+                width_m: c.width_m,
+                depth_m: c.depth_m,
+                height_m: c.height_m,
+                max_weight_kg: c.max_weight_kg,
+                tags: [...(c.tags ?? [])],
+                purpose: c.purpose,
+                notes: c.notes,
+              }));
           rows.push({
             kind: "location",
             data: {
@@ -1522,6 +1561,7 @@ export function WarehousePlanEditor({
               color: loc.color,
               tags: [...(loc.tags ?? [])],
               notes: loc.notes,
+              cells: sourceCells,
             },
           });
           break;
@@ -1743,8 +1783,29 @@ export function WarehousePlanEditor({
             case "location": {
               const tempId = `tmp_${crypto.randomUUID()}`;
               const nowIso = new Date().toISOString();
+              // Trimmed cell rows on the clipboard ride along as
+              // `pendingCells` — the autosave loop POSTs them once
+              // the parent location's create call returns a uuid.
+              // Local `cells` stays empty until the server round-trip
+              // hydrates it via the next snapshot / revalidate.
+              const pendingCells = (row.data.cells ?? []).map((c) => ({
+                ordinal: c.ordinal,
+                name: c.name,
+                width_m: c.width_m,
+                depth_m: c.depth_m,
+                height_m: c.height_m,
+                max_weight_kg: c.max_weight_kg,
+                tags: [...(c.tags ?? [])],
+                purpose: c.purpose,
+                notes: c.notes,
+              }));
+              // Drop `cells` from the spread — clipboard cells live
+              // in a different shape than the server StorageCell and
+              // we hydrate them via `pendingCells` above.
+              const { cells: _clipboardCells, ...locData } = row.data;
+              void _clipboardCells;
               const loc: LocalLocation = {
-                ...row.data,
+                ...locData,
                 id: -1,
                 uuid: tempId,
                 floor_id: s.meta.id,
@@ -1752,11 +1813,12 @@ export function WarehousePlanEditor({
                 // Fresh code — server assigns on save, mirroring the
                 // regular new-location flow.
                 code: null,
-                name: row.data.name ? appendCopySuffix(row.data.name) : "",
-                x: row.data.x + dx,
-                y: row.data.y + dy,
-                tags: row.data.tags ? [...row.data.tags] : [],
+                name: locData.name ? appendCopySuffix(locData.name) : "",
+                x: locData.x + dx,
+                y: locData.y + dy,
+                tags: locData.tags ? [...locData.tags] : [],
                 cells: [],
+                pendingCells: pendingCells.length > 0 ? pendingCells : undefined,
                 inserted_at: nowIso,
                 updated_at: nowIso,
                 tempId,
@@ -2143,6 +2205,48 @@ export function WarehousePlanEditor({
             code: res.storage_location.code,
           });
         }
+
+        // Copy-paste ferries cells alongside the location; the
+        // clipboard row stashes them on `pendingCells` and we POST
+        // each one against the freshly-minted location uuid in
+        // ordinal order so the pasted rack keeps the same
+        // bottom-to-top layout as the source. Sequential (not
+        // parallel) so an early failure short-circuits and the
+        // rollback toast points at the offending cell rather than
+        // a random parallel loser.
+        const pendingCells = loc.pendingCells ?? [];
+        if (pendingCells.length > 0) {
+          const orderedCells = [...pendingCells].sort(
+            (a, b) => a.ordinal - b.ordinal,
+          );
+          for (const cell of orderedCells) {
+            const cellRes = await createCellAction(
+              warehouseUuid,
+              res.storage_location.uuid,
+              {
+                ordinal: cell.ordinal,
+                name: cell.name,
+                width_m: cell.width_m,
+                depth_m: cell.depth_m,
+                height_m: cell.height_m,
+                max_weight_kg: cell.max_weight_kg,
+                tags: cell.tags,
+                purpose: cell.purpose,
+                notes: cell.notes,
+              },
+            );
+            if (!cellRes.ok) {
+              setActionError(cellRes);
+              setSaveStatus("error");
+              autosaveInFlightRef.current = false;
+              rollbackFloorToServer(state.meta.id);
+              toast.error("Save failed — reverted changes", {
+                description: cellRes.detail,
+              });
+              return;
+            }
+          }
+        }
       }
 
       const opResults = await Promise.all([
@@ -2207,6 +2311,12 @@ export function WarehousePlanEditor({
                   code: remote.code,
                   tempId: undefined,
                   dirty: false,
+                  // pendingCells were flushed to the server as part
+                  // of this save; drop them so the next debounce
+                  // tick doesn't try to re-POST the same rows. The
+                  // hydrated `cells` array will land on the next
+                  // snapshot/revalidate.
+                  pendingCells: undefined,
                 };
               }
               return l;

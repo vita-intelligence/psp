@@ -6,7 +6,12 @@
 // width/height/length values are integers in cm. The UI displays them
 // in metres. See `plan-utils.ts` for the conversion helpers.
 
-import type { StorageLocation, StorageLocationKind } from "@/lib/types";
+import type {
+  StorageCell,
+  StorageCellPurpose,
+  StorageLocation,
+  StorageLocationKind,
+} from "@/lib/types";
 
 export interface Point {
   /** centimetres in world space (positive right) */
@@ -223,8 +228,25 @@ export interface SnapTarget {
  *
  *  Location payload uses the LocalLocation shape MINUS server-owned
  *  fields (`id`, `uuid`, `tempId`, `inserted_at`, `updated_at`,
- *  `dirty`, `deleted`, `cells`) — paste always makes a brand-new,
- *  unsaved draft with its own tempId + fresh code from the server. */
+ *  `dirty`, `deleted`) — paste always makes a brand-new, unsaved
+ *  draft with its own tempId + fresh code from the server. The
+ *  `cells` array is replaced with a trimmed `ClipboardCell[]`
+ *  containing only operator-editable fields (server-owned ids,
+ *  timestamps and the storage_location_id are dropped so the paste
+ *  step can POST each cell against the freshly-created location's
+ *  uuid). */
+export interface ClipboardCell {
+  ordinal: number;
+  name: string | null;
+  width_m: string | null;
+  depth_m: string | null;
+  height_m: string | null;
+  max_weight_kg: string | null;
+  tags: string[];
+  purpose: StorageCellPurpose;
+  notes: string | null;
+}
+
 export type ClipboardPayload =
   | { kind: "wall"; data: Omit<Wall, "id"> }
   | { kind: "text"; data: Omit<TextAnnotation, "id"> }
@@ -244,7 +266,11 @@ export type ClipboardPayload =
         | "dirty"
         | "deleted"
         | "cells"
-      >;
+        | "pendingCells"
+      > & {
+        tags: string[];
+        cells: ClipboardCell[];
+      };
     };
 
 /** Local-only state we add on top of the server `StorageLocation`
@@ -262,9 +288,15 @@ export interface LocalLocation extends Omit<StorageLocation, "id"> {
    *  around in local state so undo can resurrect it; the save flow
    *  fires DELETE requests for these. */
   deleted?: boolean;
+  /** Cells the paste flow copied from a source location that still
+   *  need to be POSTed once this location itself is created and the
+   *  server returns its uuid. Only set on freshly-pasted locations
+   *  (i.e. rows that also carry a `tempId`). Cleared by the save
+   *  loop once every cell has been created. */
+  pendingCells?: ClipboardCell[];
 }
 
-export type { StorageLocation, StorageLocationKind };
+export type { StorageCell, StorageCellPurpose, StorageLocation, StorageLocationKind };
 
 /** What text gets stamped on each location rectangle on the canvas.
  *  Operator chooses via the editor toolbar; the choice is persisted
