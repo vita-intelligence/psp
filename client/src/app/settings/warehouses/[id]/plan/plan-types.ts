@@ -213,6 +213,40 @@ export interface SnapTarget {
   source: "wall" | "outline" | "hole";
 }
 
+/** One row in the editor's copy/paste clipboard. Discriminated by
+ *  `kind` so the paste routine can drop it into the matching array
+ *  on the active floor. `data` is the shape without its `id` — the
+ *  paste step mints a fresh id (or `tempId` for locations). Outline
+ *  itself, outline-edge, and hole-edge selections are NOT copyable
+ *  (there's one outline per floor; edges aren't independent items)
+ *  and are omitted here by design.
+ *
+ *  Location payload uses the LocalLocation shape MINUS server-owned
+ *  fields (`id`, `uuid`, `tempId`, `inserted_at`, `updated_at`,
+ *  `dirty`, `deleted`, `cells`) — paste always makes a brand-new,
+ *  unsaved draft with its own tempId + fresh code from the server. */
+export type ClipboardPayload =
+  | { kind: "wall"; data: Omit<Wall, "id"> }
+  | { kind: "text"; data: Omit<TextAnnotation, "id"> }
+  | { kind: "arrow"; data: Omit<ArrowAnnotation, "id"> }
+  | { kind: "path"; data: Omit<PathAnnotation, "id"> }
+  | { kind: "rect"; data: Omit<RectAnnotation, "id"> }
+  | { kind: "hole"; data: Omit<Hole, "id"> }
+  | {
+      kind: "location";
+      data: Omit<
+        LocalLocation,
+        | "id"
+        | "uuid"
+        | "tempId"
+        | "inserted_at"
+        | "updated_at"
+        | "dirty"
+        | "deleted"
+        | "cells"
+      >;
+    };
+
 /** Local-only state we add on top of the server `StorageLocation`
  *  rows. New (unsaved) locations get a tempId and have `id: -1` so
  *  the type stays uniform; the save flow translates them to

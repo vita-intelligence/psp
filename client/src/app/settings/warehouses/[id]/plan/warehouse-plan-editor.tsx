@@ -50,6 +50,7 @@ import { purposeMeta } from "@/lib/storage-cells/purpose";
 import type {
   ArrowAnnotation,
   CanvasJson,
+  ClipboardPayload,
   FloorOutline,
   Hole,
   LocalLocation,
@@ -1446,6 +1447,366 @@ export function WarehousePlanEditor({
     setSelection([]);
   }, [selection, updateActiveFloor]);
 
+  // ----------------------------------------------------------- clipboard
+  //
+  // Copy / paste / duplicate for every canvas primitive (walls,
+  // locations, texts, arrows, paths, rects, independent holes). The
+  // clipboard is a plain ref — it doesn't drive rendering, and we
+  // don't want a re-render every time the operator presses Cmd+C.
+  //
+  // Paste offset is cumulative: repeat-pasting from the same copy
+  // walks the new items diagonally so they don't stack on top of
+  // each other. Fresh copy resets the offset counter.
+  const clipboardRef = useRef<ClipboardPayload[] | null>(null);
+  const pasteOffsetRef = useRef<number>(0);
+  // Mirror of `clipboardRef.current?.length ?? 0` in state so React
+  // can render off it without violating the "no ref access during
+  // render" lint rule. Kept in sync inside every copy / duplicate
+  // callback that mutates the ref.
+  const [clipboardCount, setClipboardCount] = useState(0);
+
+  // Append " (copy)" once — don't stack. Matches Figma / Miro.
+  // Callers guard nullish inputs before calling; the helper only
+  // deals with a real string so the return type stays a plain string
+  // and slots into `TextAnnotation.name`, `RectAnnotation.name`, etc.
+  // without a union widening.
+  const appendCopySuffix = useCallback((name: string): string => {
+    if (name.endsWith("(copy)")) return name;
+    return `${name} (copy)`;
+  }, []);
+
+  const copySelection = useCallback(() => {
+    if (activeFloorId == null) return;
+    const state = floorStates[activeFloorId];
+    if (!state) return;
+    if (selection.length === 0) return;
+
+    const rows: ClipboardPayload[] = [];
+    for (const item of selection) {
+      switch (item.kind) {
+        case "wall": {
+          const wall = state.walls.find((w) => w.id === item.id);
+          if (!wall) break;
+          rows.push({
+            kind: "wall",
+            data: {
+              x1: wall.x1,
+              y1: wall.y1,
+              x2: wall.x2,
+              y2: wall.y2,
+              bow: wall.bow,
+              color: wall.color,
+            },
+          });
+          break;
+        }
+        case "location": {
+          const loc = state.locations.find(
+            (l) => (l.tempId ?? l.uuid) === item.id,
+          );
+          if (!loc || loc.deleted) break;
+          rows.push({
+            kind: "location",
+            data: {
+              warehouse_id: loc.warehouse_id,
+              floor_id: loc.floor_id,
+              name: loc.name,
+              code: loc.code,
+              x: loc.x,
+              y: loc.y,
+              width: loc.width,
+              height: loc.height,
+              width_m: loc.width_m,
+              height_m: loc.height_m,
+              depth_m: loc.depth_m,
+              color: loc.color,
+              tags: [...(loc.tags ?? [])],
+              notes: loc.notes,
+            },
+          });
+          break;
+        }
+        case "text": {
+          const text = state.texts.find((t) => t.id === item.id);
+          if (!text) break;
+          rows.push({
+            kind: "text",
+            data: {
+              x: text.x,
+              y: text.y,
+              width: text.width,
+              height: text.height,
+              text: text.text,
+              fontSize: text.fontSize,
+              color: text.color,
+            },
+          });
+          break;
+        }
+        case "arrow": {
+          const arrow = state.arrows.find((a) => a.id === item.id);
+          if (!arrow) break;
+          rows.push({
+            kind: "arrow",
+            data: {
+              x1: arrow.x1,
+              y1: arrow.y1,
+              x2: arrow.x2,
+              y2: arrow.y2,
+              color: arrow.color,
+            },
+          });
+          break;
+        }
+        case "path": {
+          const path = state.paths.find((p) => p.id === item.id);
+          if (!path) break;
+          rows.push({
+            kind: "path",
+            data: {
+              points: path.points.map((p) => ({ x: p.x, y: p.y })),
+              width_m: path.width_m,
+              color: path.color,
+              name: path.name,
+            },
+          });
+          break;
+        }
+        case "rect": {
+          const rect = state.rects.find((r) => r.id === item.id);
+          if (!rect) break;
+          rows.push({
+            kind: "rect",
+            data: {
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height,
+              fill: rect.fill,
+              stroke: rect.stroke,
+              name: rect.name,
+            },
+          });
+          break;
+        }
+        case "hole": {
+          const hole = state.outline?.holes?.find((h) => h.id === item.id);
+          if (!hole) break;
+          rows.push({
+            kind: "hole",
+            data: {
+              points: hole.points.map((p) => ({ x: p.x, y: p.y })),
+              edgeBows: hole.edgeBows ? [...hole.edgeBows] : undefined,
+              color: hole.color,
+            },
+          });
+          break;
+        }
+        // outline / outline-edge / hole-edge — silently skipped.
+        default:
+          break;
+      }
+    }
+
+    if (rows.length === 0) return;
+    clipboardRef.current = rows;
+    pasteOffsetRef.current = 0;
+    setClipboardCount(rows.length);
+  }, [activeFloorId, floorStates, selection]);
+
+  /** Paste every row currently on the clipboard onto the active
+   *  floor. Bumps the cumulative offset so repeat-pastes walk the
+   *  items diagonally. Selects the newly-created items so a
+   *  follow-up drag / delete acts on them. Returns whether anything
+   *  was pasted (used by duplicate). */
+  const pasteClipboard = useCallback((): boolean => {
+    if (activeFloorId == null) return false;
+    const rows = clipboardRef.current;
+    if (!rows || rows.length === 0) return false;
+
+    // Offset scales with the number of pastes since the last copy so
+    // the operator can Cmd+V a few times in a row and see each drop
+    // land diagonally-down-right of the previous.
+    const step = pasteOffsetRef.current + 1;
+    const dx = 50 * step;
+    const dy = 50 * step;
+
+    const newSelection: SelectionSet = [];
+
+    updateActiveFloor(
+      (s) => {
+        let outline = s.outline;
+        let walls = s.walls;
+        let locations = s.locations;
+        let texts = s.texts;
+        let arrows = s.arrows;
+        let paths = s.paths;
+        let rects = s.rects;
+
+        for (const row of rows) {
+          switch (row.kind) {
+            case "wall": {
+              const id = `wall_${crypto.randomUUID()}`;
+              const w: Wall = {
+                ...row.data,
+                id,
+                x1: row.data.x1 + dx,
+                y1: row.data.y1 + dy,
+                x2: row.data.x2 + dx,
+                y2: row.data.y2 + dy,
+              };
+              walls = [...walls, w];
+              newSelection.push({ kind: "wall", id });
+              break;
+            }
+            case "text": {
+              const id = `txt_${crypto.randomUUID()}`;
+              const t: TextAnnotation = {
+                ...row.data,
+                id,
+                x: row.data.x + dx,
+                y: row.data.y + dy,
+              };
+              texts = [...texts, t];
+              newSelection.push({ kind: "text", id });
+              break;
+            }
+            case "arrow": {
+              const id = `arw_${crypto.randomUUID()}`;
+              const a: ArrowAnnotation = {
+                ...row.data,
+                id,
+                x1: row.data.x1 + dx,
+                y1: row.data.y1 + dy,
+                x2: row.data.x2 + dx,
+                y2: row.data.y2 + dy,
+              };
+              arrows = [...arrows, a];
+              newSelection.push({ kind: "arrow", id });
+              break;
+            }
+            case "path": {
+              const id = `pth_${crypto.randomUUID()}`;
+              const p: PathAnnotation = {
+                ...row.data,
+                id,
+                // Only stamp " (copy)" when the source actually had a
+                // name — an unnamed path stays unnamed.
+                name: row.data.name
+                  ? appendCopySuffix(row.data.name)
+                  : row.data.name,
+                points: row.data.points.map((pt) => ({
+                  x: pt.x + dx,
+                  y: pt.y + dy,
+                })),
+              };
+              paths = [...paths, p];
+              newSelection.push({ kind: "path", id });
+              break;
+            }
+            case "rect": {
+              const id = `rct_${crypto.randomUUID()}`;
+              const r: RectAnnotation = {
+                ...row.data,
+                id,
+                x: row.data.x + dx,
+                y: row.data.y + dy,
+                name: row.data.name
+                  ? appendCopySuffix(row.data.name)
+                  : row.data.name,
+              };
+              rects = [...rects, r];
+              newSelection.push({ kind: "rect", id });
+              break;
+            }
+            case "hole": {
+              // Holes only exist inside an outline. If the operator
+              // deleted the outline between copy and paste, skip
+              // silently — nothing to nest the cutout under.
+              if (!outline) break;
+              const id = crypto.randomUUID();
+              const h: Hole = {
+                ...row.data,
+                id,
+                points: row.data.points.map((pt) => ({
+                  x: pt.x + dx,
+                  y: pt.y + dy,
+                })),
+              };
+              outline = {
+                ...outline,
+                holes: [...(outline.holes ?? []), h],
+              };
+              newSelection.push({ kind: "hole", id });
+              break;
+            }
+            case "location": {
+              const tempId = `tmp_${crypto.randomUUID()}`;
+              const nowIso = new Date().toISOString();
+              const loc: LocalLocation = {
+                ...row.data,
+                id: -1,
+                uuid: tempId,
+                floor_id: s.meta.id,
+                warehouse_id: warehouseId,
+                // Fresh code — server assigns on save, mirroring the
+                // regular new-location flow.
+                code: null,
+                name: row.data.name ? appendCopySuffix(row.data.name) : "",
+                x: row.data.x + dx,
+                y: row.data.y + dy,
+                tags: row.data.tags ? [...row.data.tags] : [],
+                cells: [],
+                inserted_at: nowIso,
+                updated_at: nowIso,
+                tempId,
+                dirty: true,
+                deleted: false,
+              };
+              locations = [...locations, loc];
+              newSelection.push({ kind: "location", id: tempId });
+              break;
+            }
+          }
+        }
+
+        return {
+          ...s,
+          outline,
+          walls,
+          locations,
+          texts,
+          arrows,
+          paths,
+          rects,
+        };
+      },
+      { snapshot: true },
+    );
+
+    pasteOffsetRef.current = step;
+    if (newSelection.length > 0) {
+      setSelection(newSelection);
+      setTool("select");
+    }
+    return newSelection.length > 0;
+  }, [activeFloorId, appendCopySuffix, updateActiveFloor, warehouseId]);
+
+  /** Duplicate — copy + immediate paste in one gesture. Same
+   *  behaviour as Cmd+C then Cmd+V, but the offset resets first so
+   *  the duplicate lands +50,+50 from the source (not from wherever
+   *  a previous paste chain ended). */
+  const duplicateSelection = useCallback(() => {
+    if (selection.length === 0) return;
+    // Snapshot the current selection into the clipboard, then paste.
+    // copySelection resets pasteOffsetRef; pasteClipboard bumps it to
+    // step=1 (=+50,+50) which is exactly what we want.
+    copySelection();
+    // copySelection is synchronous and populates clipboardRef before
+    // returning, so paste sees the fresh rows.
+    pasteClipboard();
+  }, [copySelection, pasteClipboard, selection.length]);
+
   // ----------------------------------------------------------- undo/redo
 
   const undo = useCallback(() => {
@@ -1559,6 +1920,31 @@ export function WarehousePlanEditor({
         redo();
         return;
       }
+      // Copy / paste / duplicate — Cmd on macOS, Ctrl elsewhere.
+      // These must land BEFORE the single-letter tool switches
+      // below, otherwise Cmd+C would flip the tool to something odd.
+      if (mod && k === "c" && !e.shiftKey && !e.altKey) {
+        if (selection.length === 0) return;
+        e.preventDefault();
+        copySelection();
+        return;
+      }
+      if (mod && k === "v" && !e.shiftKey && !e.altKey) {
+        if (clipboardCount === 0) return;
+        e.preventDefault();
+        pasteClipboard();
+        return;
+      }
+      if (mod && k === "d" && !e.shiftKey && !e.altKey) {
+        if (selection.length === 0) return;
+        e.preventDefault();
+        duplicateSelection();
+        return;
+      }
+      // Tool shortcuts — plain letters, no modifier. Guarding on
+      // `!mod` keeps Cmd+C / Cmd+V / Cmd+F (browser find) from
+      // hijacking the corresponding letter.
+      if (mod) return;
       switch (k) {
         case "v":
           setTool("select");
@@ -1605,7 +1991,18 @@ export function WarehousePlanEditor({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [undo, redo, readOnly, activeFloor?.outline, selection.length, onDeleteSelected]);
+  }, [
+    undo,
+    redo,
+    readOnly,
+    activeFloor?.outline,
+    selection.length,
+    onDeleteSelected,
+    copySelection,
+    pasteClipboard,
+    duplicateSelection,
+    clipboardCount,
+  ]);
 
   // ----------------------------------------------------------- save flow
 
@@ -2210,9 +2607,11 @@ export function WarehousePlanEditor({
               onOutlineCommitted={onOutlineCommitted}
               onHoleCommitted={onHoleCommitted}
               onContextMenuAt={(x, y) => {
-                // No menu when nothing's selected — right-click on
-                // empty canvas is a no-op instead of showing a stub.
-                if (selection.length === 0) return;
+                // Open the menu when there's SOMETHING to act on —
+                // either a selection (Copy / Duplicate / Delete) or
+                // a clipboard payload (Paste). Right-click on empty
+                // canvas with an empty clipboard stays a no-op.
+                if (selection.length === 0 && clipboardCount === 0) return;
                 setContextMenu({ x, y });
               }}
               onLocationLabelEdit={(id, name) => {
@@ -2232,15 +2631,24 @@ export function WarehousePlanEditor({
               x={contextMenu.x}
               y={contextMenu.y}
               selectionCount={selection.length}
-              disabled={readOnly || !liveIsCreator}
+              hasClipboard={clipboardCount > 0}
+              disabled={readOnly}
               onClose={() => setContextMenu(null)}
+              onCopy={() => {
+                setContextMenu(null);
+                copySelection();
+              }}
+              onPaste={() => {
+                setContextMenu(null);
+                pasteClipboard();
+              }}
+              onDuplicate={() => {
+                setContextMenu(null);
+                duplicateSelection();
+              }}
               onDelete={() => {
                 setContextMenu(null);
                 onDeleteSelected();
-              }}
-              onDeselect={() => {
-                setContextMenu(null);
-                setSelection([]);
               }}
             />
           )}
@@ -2701,25 +3109,38 @@ const LabelModeSelect = memo(function LabelModeSelect({
  * floor switcher, remote cursors). Closes on Esc, outside click, or
  * any item click.
  *
- * MVP items: Delete + Deselect. Duplicate / bring-forward / send-back
- * land in a follow-up once we plumb per-shape z-order state.
+ * Items:
+ *   • Copy       — snapshots the current selection into the editor
+ *                  clipboard ref. Disabled when nothing is selected.
+ *   • Paste      — drops the clipboard contents at +50cm,+50cm from
+ *                  the source (cumulative on repeat). Disabled when
+ *                  the clipboard is empty.
+ *   • Duplicate  — shorthand for Copy + Paste in one gesture.
+ *   • Delete     — bulk-delete every selected item.
+ *   • Cancel     — closes the menu without acting.
  */
 function PlanContextMenu({
   x,
   y,
   selectionCount,
+  hasClipboard,
   disabled,
   onClose,
+  onCopy,
+  onPaste,
+  onDuplicate,
   onDelete,
-  onDeselect,
 }: {
   x: number;
   y: number;
   selectionCount: number;
+  hasClipboard: boolean;
   disabled: boolean;
   onClose: () => void;
+  onCopy: () => void;
+  onPaste: () => void;
+  onDuplicate: () => void;
   onDelete: () => void;
-  onDeselect: () => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -2743,21 +3164,35 @@ function PlanContextMenu({
   }, [onClose]);
 
   // Clamp to viewport so a right-click near the bottom-right edge
-  // doesn't drop the menu off-screen.
-  const width = 200;
-  const height = 90;
+  // doesn't drop the menu off-screen. Estimate height from the five
+  // menu rows + the label — good enough for a hint; the browser
+  // won't scroll a fixed-position menu regardless.
+  const width = 220;
+  const height = 200;
   const left = Math.min(x, window.innerWidth - width - 8);
   const top = Math.min(y, window.innerHeight - height - 8);
 
   const label =
-    selectionCount === 1
-      ? "1 item selected"
-      : `${selectionCount} items selected`;
+    selectionCount === 0
+      ? "No selection"
+      : selectionCount === 1
+        ? "1 item selected"
+        : `${selectionCount} items selected`;
+
+  const isMac =
+    typeof navigator !== "undefined" &&
+    /Mac|iPhone|iPod|iPad/.test(navigator.platform);
+  const modLabel = isMac ? "⌘" : "Ctrl";
+
+  const copyDisabled = disabled || selectionCount === 0;
+  const pasteDisabled = disabled || !hasClipboard;
+  const duplicateDisabled = disabled || selectionCount === 0;
+  const deleteDisabled = disabled || selectionCount === 0;
 
   return (
     <div
       ref={ref}
-      className="fixed z-[60] min-w-[200px] rounded-md border border-border/60 bg-background p-1 text-xs shadow-xl"
+      className="fixed z-[60] min-w-[220px] rounded-md border border-border/60 bg-background p-1 text-xs shadow-xl"
       style={{ left, top }}
       role="menu"
       aria-label="Canvas actions"
@@ -2768,8 +3203,45 @@ function PlanContextMenu({
       <button
         type="button"
         role="menuitem"
+        onClick={onCopy}
+        disabled={copyDisabled}
+        className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <span>Copy</span>
+        <kbd className="rounded border border-border/60 bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+          {modLabel} C
+        </kbd>
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={onPaste}
+        disabled={pasteDisabled}
+        className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <span>Paste</span>
+        <kbd className="rounded border border-border/60 bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+          {modLabel} V
+        </kbd>
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={onDuplicate}
+        disabled={duplicateDisabled}
+        className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <span>Duplicate</span>
+        <kbd className="rounded border border-border/60 bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+          {modLabel} D
+        </kbd>
+      </button>
+      <div className="my-1 border-t border-border/60" />
+      <button
+        type="button"
+        role="menuitem"
         onClick={onDelete}
-        disabled={disabled}
+        disabled={deleteDisabled}
         className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
       >
         <span>Delete</span>
@@ -2780,10 +3252,10 @@ function PlanContextMenu({
       <button
         type="button"
         role="menuitem"
-        onClick={onDeselect}
+        onClick={onClose}
         className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left hover:bg-muted"
       >
-        <span>Deselect</span>
+        <span>Cancel</span>
         <kbd className="rounded border border-border/60 bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
           Esc
         </kbd>
@@ -2837,6 +3309,9 @@ function KeyboardShortcutsOverlay({
       rows: [
         { keys: ["⌘/Ctrl", "Z"], label: "Undo" },
         { keys: ["⌘/Ctrl", "Shift", "Z"], label: "Redo" },
+        { keys: ["⌘/Ctrl", "C"], label: "Copy selection" },
+        { keys: ["⌘/Ctrl", "V"], label: "Paste" },
+        { keys: ["⌘/Ctrl", "D"], label: "Duplicate selection" },
         { keys: ["Delete"], label: "Delete selected" },
         { keys: ["Esc"], label: "Cancel draft / clear selection" },
       ],
