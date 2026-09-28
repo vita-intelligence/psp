@@ -498,6 +498,43 @@ function OutlineBody({
     });
   };
 
+  /** Scale the outline (and every hole nested inside it) about the
+   *  bbox top-left. Used by the Size (W × H) inputs so typing "10m
+   *  wide" reshapes the room without dragging vertices one by one.
+   *  Holes stay proportionally placed, matching the intuition of
+   *  "the whole room stretched, the stairwell went with it". */
+  const scaleAboutBboxTopLeft = (sx: number, sy: number) => {
+    if (!bbox) return;
+    if (Math.abs(sx - 1) < 1e-6 && Math.abs(sy - 1) < 1e-6) return;
+    const ox = bbox.x;
+    const oy = bbox.y;
+    const scalePoint = (p: Point) => ({
+      x: Math.round(ox + (p.x - ox) * sx),
+      y: Math.round(oy + (p.y - oy) * sy),
+    });
+    onUpdate({
+      points: outline.points.map(scalePoint),
+      holes: outline.holes?.map((h) => ({
+        ...h,
+        points: h.points.map(scalePoint),
+      })),
+    });
+  };
+
+  /** Move a single outline vertex to an absolute (X, Y) position.
+   *  Powers the per-vertex table below Size — the operator types the
+   *  corner coordinate they measured on the tape and the polygon
+   *  reshapes point-wise. Holes are NOT dragged along here (unlike
+   *  the whole-outline translate above) because moving a single
+   *  vertex is a localised edit, not a room-wide move. */
+  const setVertex = (index: number, next: Partial<Point>) => {
+    onUpdate({
+      points: outline.points.map((p, i) =>
+        i === index ? { x: next.x ?? p.x, y: next.y ?? p.y } : p,
+      ),
+    });
+  };
+
   return (
     <div className="space-y-3">
       <Row label="Vertices">
@@ -513,20 +550,73 @@ function OutlineBody({
         <span className="font-mono text-xs">{outline.holes?.length ?? 0}</span>
       </Row>
       {bbox && (
-        <Row label="Position (m)">
-          <div className="grid grid-cols-2 gap-1.5">
-            <MetresInput
-              valueCm={bbox.x}
-              onChange={(cm) => cm !== null && translate(cm - bbox.x, 0)}
-              placeholder="X"
-            />
-            <MetresInput
-              valueCm={bbox.y}
-              onChange={(cm) => cm !== null && translate(0, cm - bbox.y)}
-              placeholder="Y"
-            />
+        <>
+          <Row label="Position (m)">
+            <div className="grid grid-cols-2 gap-1.5">
+              <MetresInput
+                valueCm={bbox.x}
+                onChange={(cm) => cm !== null && translate(cm - bbox.x, 0)}
+                placeholder="X"
+              />
+              <MetresInput
+                valueCm={bbox.y}
+                onChange={(cm) => cm !== null && translate(0, cm - bbox.y)}
+                placeholder="Y"
+              />
+            </div>
+          </Row>
+          <Row label="Size (m)">
+            <div className="grid grid-cols-2 gap-1.5">
+              <MetresInput
+                valueCm={bbox.width}
+                onChange={(cm) =>
+                  cm !== null &&
+                  cm > 0 &&
+                  bbox.width > 0 &&
+                  scaleAboutBboxTopLeft(cm / bbox.width, 1)
+                }
+                placeholder="W"
+              />
+              <MetresInput
+                valueCm={bbox.height}
+                onChange={(cm) =>
+                  cm !== null &&
+                  cm > 0 &&
+                  bbox.height > 0 &&
+                  scaleAboutBboxTopLeft(1, cm / bbox.height)
+                }
+                placeholder="H"
+              />
+            </div>
+          </Row>
+        </>
+      )}
+      {!readOnly && outline.points.length > 0 && (
+        <details className="rounded-md border border-border/60 bg-muted/20 open:pb-2">
+          <summary className="cursor-pointer px-2.5 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground">
+            Vertices (X, Y in m)
+          </summary>
+          <div className="space-y-1.5 px-2.5 pt-1">
+            {outline.points.map((p, i) => (
+              <div
+                key={i}
+                className="grid grid-cols-[1.75rem_1fr_1fr] items-center gap-1.5"
+              >
+                <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+                  {i + 1}
+                </span>
+                <MetresInput
+                  valueCm={p.x}
+                  onChange={(cm) => cm !== null && setVertex(i, { x: cm })}
+                />
+                <MetresInput
+                  valueCm={p.y}
+                  onChange={(cm) => cm !== null && setVertex(i, { y: cm })}
+                />
+              </div>
+            ))}
           </div>
-        </Row>
+        </details>
       )}
       {(outline.holes?.length ?? 0) > 0 && (
         <Row label="Walkable area">
@@ -588,6 +678,28 @@ function HoleBody({
       points: hole.points.map((p) => ({ x: p.x + dx, y: p.y + dy })),
     });
   };
+  /** Scale the hole about its bbox top-left. Mirrors the Size (W×H)
+   *  editor on the parent outline so cutouts (stairwells, atriums)
+   *  can be resized numerically instead of dragging four corners. */
+  const scaleAboutBboxTopLeft = (sx: number, sy: number) => {
+    if (!bbox) return;
+    if (Math.abs(sx - 1) < 1e-6 && Math.abs(sy - 1) < 1e-6) return;
+    const ox = bbox.x;
+    const oy = bbox.y;
+    onUpdate({
+      points: hole.points.map((p) => ({
+        x: Math.round(ox + (p.x - ox) * sx),
+        y: Math.round(oy + (p.y - oy) * sy),
+      })),
+    });
+  };
+  const setVertex = (index: number, next: Partial<Point>) => {
+    onUpdate({
+      points: hole.points.map((p, i) =>
+        i === index ? { x: next.x ?? p.x, y: next.y ?? p.y } : p,
+      ),
+    });
+  };
   return (
     <div className="space-y-3">
       <Row label="Vertices">
@@ -600,20 +712,73 @@ function HoleBody({
         <span className="font-mono text-xs">{formatArea(area)}</span>
       </Row>
       {bbox && (
-        <Row label="Position (m)">
-          <div className="grid grid-cols-2 gap-1.5">
-            <MetresInput
-              valueCm={bbox.x}
-              onChange={(cm) => cm !== null && translate(cm - bbox.x, 0)}
-              placeholder="X"
-            />
-            <MetresInput
-              valueCm={bbox.y}
-              onChange={(cm) => cm !== null && translate(0, cm - bbox.y)}
-              placeholder="Y"
-            />
+        <>
+          <Row label="Position (m)">
+            <div className="grid grid-cols-2 gap-1.5">
+              <MetresInput
+                valueCm={bbox.x}
+                onChange={(cm) => cm !== null && translate(cm - bbox.x, 0)}
+                placeholder="X"
+              />
+              <MetresInput
+                valueCm={bbox.y}
+                onChange={(cm) => cm !== null && translate(0, cm - bbox.y)}
+                placeholder="Y"
+              />
+            </div>
+          </Row>
+          <Row label="Size (m)">
+            <div className="grid grid-cols-2 gap-1.5">
+              <MetresInput
+                valueCm={bbox.width}
+                onChange={(cm) =>
+                  cm !== null &&
+                  cm > 0 &&
+                  bbox.width > 0 &&
+                  scaleAboutBboxTopLeft(cm / bbox.width, 1)
+                }
+                placeholder="W"
+              />
+              <MetresInput
+                valueCm={bbox.height}
+                onChange={(cm) =>
+                  cm !== null &&
+                  cm > 0 &&
+                  bbox.height > 0 &&
+                  scaleAboutBboxTopLeft(1, cm / bbox.height)
+                }
+                placeholder="H"
+              />
+            </div>
+          </Row>
+        </>
+      )}
+      {!readOnly && hole.points.length > 0 && (
+        <details className="rounded-md border border-border/60 bg-muted/20 open:pb-2">
+          <summary className="cursor-pointer px-2.5 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground">
+            Vertices (X, Y in m)
+          </summary>
+          <div className="space-y-1.5 px-2.5 pt-1">
+            {hole.points.map((p, i) => (
+              <div
+                key={i}
+                className="grid grid-cols-[1.75rem_1fr_1fr] items-center gap-1.5"
+              >
+                <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+                  {i + 1}
+                </span>
+                <MetresInput
+                  valueCm={p.x}
+                  onChange={(cm) => cm !== null && setVertex(i, { x: cm })}
+                />
+                <MetresInput
+                  valueCm={p.y}
+                  onChange={(cm) => cm !== null && setVertex(i, { y: cm })}
+                />
+              </div>
+            ))}
           </div>
-        </Row>
+        </details>
       )}
       <div className="space-y-1.5">
         <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
