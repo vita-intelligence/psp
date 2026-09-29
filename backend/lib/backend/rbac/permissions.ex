@@ -356,8 +356,14 @@ defmodule Backend.RBAC.Permissions do
     {"production.machine_edit",
      "Edit machines (rate, asset tag, serial, calibration schedule)"},
     {"production.machine_delete", "Delete machines"},
+    # ``machine_recalibrate`` is registered but no code gates on it yet
+    # — calibration events land through the Equipment module today
+    # (``equipment.act``). Keep the code reserved for the follow-up
+    # split; do NOT put it on ``matrix/0`` until an endpoint enforces
+    # it, otherwise the admin toggle would grant a permission that
+    # controls nothing.
     {"production.machine_recalibrate",
-     "Record a calibration event for a machine"},
+     "Record a calibration event for a machine (reserved — wire when the machine-level calibration endpoint lands)"},
     {"production.routing_view", "View routings"},
     {"production.routing_create", "Create new routings"},
     {"production.routing_edit",
@@ -601,6 +607,16 @@ defmodule Backend.RBAC.Permissions do
             create: "units.manage",
             update: "units.manage",
             delete: "units.manage"
+          },
+          %{
+            key: "integrations",
+            label: "Integration tokens",
+            description:
+              "Machine-to-machine bearer tokens for external systems (currently vita-performance). One permission for the full lifecycle — mint, list, rotate, revoke.",
+            read: "integrations.manage",
+            create: "integrations.manage",
+            update: "integrations.manage",
+            delete: "integrations.manage"
           }
         ]
       },
@@ -641,10 +657,20 @@ defmodule Backend.RBAC.Permissions do
             key: "risk_assessments",
             label: "Risk assessments",
             description:
-              "TACCP / VACCP / HACCP scorecards on raw materials. `Approve` gates the override on the computed level. Read visibility is bundled into `items.view` — the risk payload rides on the item show response.",
+              "TACCP / VACCP / HACCP scorecards on raw materials. Read visibility is bundled into `items.view` — the risk payload rides on the item show response.",
             read: nil,
             create: "risk_assessments.create",
             update: "risk_assessments.create",
+            delete: nil
+          },
+          %{
+            key: "risk_assessment_approval",
+            label: "Risk assessment override",
+            description:
+              "Approver-only gate for overriding the computed TACCP / VACCP risk level with a documented justification. Typically held by senior QA, separate from the operator who fills the scorecard.",
+            read: nil,
+            create: nil,
+            update: "risk_assessments.approve",
             delete: nil
           },
           %{
@@ -691,6 +717,26 @@ defmodule Backend.RBAC.Permissions do
             create: "stock.qc",
             update: "stock.hold",
             delete: "stock.dispose"
+          },
+          %{
+            key: "stock_write_off_draft",
+            label: "Stock write-offs — file + approve",
+            description:
+              "Three-key GMP control (BRCGS §3.11 extended) — the filer opens a draft write-off and the approver (usually QC manager) signs off. Splitting file / approve / authorise across three permissions prevents any single seniority from single-handedly pushing a write-off all the way through.",
+            read: nil,
+            create: "stock.writeoff.file",
+            update: "stock.writeoff.approve",
+            delete: nil
+          },
+          %{
+            key: "stock_write_off_authorise",
+            label: "Stock write-offs — authorise + revert",
+            description:
+              "Authoriser (usually Site / Ops manager) fires the actual stock adjustment; revert restores the qty if an active write-off needs to be undone. Held by a different seniority than the filer / approver to preserve the three-key control.",
+            read: nil,
+            create: "stock.writeoff.authorise",
+            update: "stock.writeoff.revert",
+            delete: nil
           }
         ]
       },
@@ -736,6 +782,16 @@ defmodule Backend.RBAC.Permissions do
             create: "customer_orders.create",
             update: "customer_orders.create",
             delete: "customer_orders.delete"
+          },
+          %{
+            key: "customer_order_submit",
+            label: "CO submit for approval",
+            description:
+              "Submit a draft customer order into the approval queue. Separated from `create` so a sales rep can draft COs while the submit action is retained by an ops / trade-credit gatekeeper.",
+            read: "customer_orders.view",
+            create: nil,
+            update: "customer_orders.submit",
+            delete: nil
           },
           %{
             key: "customer_order_approval",
@@ -873,6 +929,16 @@ defmodule Backend.RBAC.Permissions do
             delete: "procurement.po_create"
           },
           %{
+            key: "po_submit",
+            label: "PO submit for approval",
+            description:
+              "Submit a draft PO into the approval queue. Separated from `po_create` so a junior buyer can draft POs while a senior sign-off keeps ownership of the submit action.",
+            read: "procurement.po_view",
+            create: nil,
+            update: "procurement.po_submit",
+            delete: nil
+          },
+          %{
             key: "po_approval",
             label: "PO approval",
             description:
@@ -901,6 +967,16 @@ defmodule Backend.RBAC.Permissions do
             create: "procurement.invoice_manage",
             update: "procurement.invoice_manage",
             delete: "procurement.invoice_manage"
+          },
+          %{
+            key: "invoice_approval",
+            label: "Invoice approval + mark-paid",
+            description:
+              "Sign-off gate on vendor invoices — approves the three-way match and flips the invoice to paid. Held by finance, separate from the buyer who manages the invoice paperwork.",
+            read: "procurement.invoice_view",
+            create: nil,
+            update: "procurement.invoice_approve",
+            delete: nil
           }
         ]
       },
@@ -1088,6 +1164,16 @@ defmodule Backend.RBAC.Permissions do
             delete: nil
           },
           %{
+            key: "final_release",
+            label: "Final Product Release (BRCGS § 5.6)",
+            description:
+              "Positive-Release sign-off on a finished output lot before dispatch. Dual sign-off — two different holders of this permission must both sign before the lot flips from awaiting_release to available. Distinct from `qc_output` (in-line QC) — this is the last regulatory gate before goods leave the site.",
+            read: nil,
+            create: nil,
+            update: "production.final_release",
+            delete: nil
+          },
+          %{
             key: "closeout",
             label: "Close out production run (mobile)",
             description:
@@ -1130,6 +1216,31 @@ defmodule Backend.RBAC.Permissions do
             read: "shipments.view",
             create: "shipments.edit",
             update: "shipments.pickup",
+            delete: nil
+          },
+          %{
+            key: "shipment_delivery",
+            label: "Shipment delivery confirmation",
+            description:
+              "Record proof-of-delivery once a consignment has been received at destination (recipient signatory, optional notes / photos). Flips status to delivered (terminal). Separated from pickup because the actor persona differs — customer service / warehouse admin logs the POD, not the loader who stamped pickup.",
+            read: "shipments.view",
+            create: nil,
+            update: "shipments.confirm_delivery",
+            delete: nil
+          }
+        ]
+      },
+      %{
+        section: "Equipment",
+        resources: [
+          %{
+            key: "equipment",
+            label: "Equipment registry",
+            description:
+              "Serial-tracked units — separate scope from stock because the lifecycle model differs (units, not qty). Create adds units (manual entry / opening balance); Act records every lifecycle transition (put in service, moved, maintenance, calibrate, retire, dispose).",
+            read: "equipment.view",
+            create: "equipment.create",
+            update: "equipment.act",
             delete: nil
           }
         ]

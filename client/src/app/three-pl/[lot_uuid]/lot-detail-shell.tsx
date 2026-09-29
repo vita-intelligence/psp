@@ -47,6 +47,7 @@ const FILE_KIND_LABEL: Record<string, string> = {
 interface Props {
   detail: ThreePLLotDetailResponse;
   companyDefaults: CompanyDefaults | null;
+  canDispatchRequest: boolean;
 }
 
 /**
@@ -55,7 +56,11 @@ interface Props {
  * Positive Release paperwork (CoA / BMR / micro / label proof /
  * retention sample), and dispatch history.
  */
-export function LotDetailShell({ detail, companyDefaults }: Props) {
+export function LotDetailShell({
+  detail,
+  companyDefaults,
+  canDispatchRequest,
+}: Props) {
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const { lot, summary, dispatches, release, move_in_evidence } = detail;
   const placement = lot.placements?.[0];
@@ -259,20 +264,22 @@ export function LotDetailShell({ detail, companyDefaults }: Props) {
               <Truck className="size-4" />
               Dispatch history
             </CardTitle>
-            <Button
-              type="button"
-              size="sm"
-              disabled={!!misplaced}
-              onClick={() => setDispatchOpen(true)}
-              title={
-                misplaced
-                  ? "Move the lot into a three_pl_storage cell before dispatching."
-                  : "Queue a new dispatch for the warehouse picker."
-              }
-            >
-              <Truck className="mr-1 size-3.5" />
-              Queue dispatch
-            </Button>
+            {canDispatchRequest && (
+              <Button
+                type="button"
+                size="sm"
+                disabled={!!misplaced}
+                onClick={() => setDispatchOpen(true)}
+                title={
+                  misplaced
+                    ? "Move the lot into a three_pl_storage cell before dispatching."
+                    : "Queue a new dispatch for the warehouse picker."
+                }
+              >
+                <Truck className="mr-1 size-3.5" />
+                Queue dispatch
+              </Button>
+            )}
           </div>
         </CardHeader>
         <CardContent className="space-y-4 p-0">
@@ -314,11 +321,13 @@ export function LotDetailShell({ detail, companyDefaults }: Props) {
         </CardContent>
       </Card>
 
-      <DispatchDialog
-        open={dispatchOpen}
-        onOpenChange={setDispatchOpen}
-        row={dispatchRow}
-      />
+      {canDispatchRequest && (
+        <DispatchDialog
+          open={dispatchOpen}
+          onOpenChange={setDispatchOpen}
+          row={dispatchRow}
+        />
+      )}
     </div>
   );
 }

@@ -30,6 +30,8 @@ export default async function ThreePLLotDetailPage({ params }: Props) {
 
   if (!detail) notFound();
 
+  const canDispatchRequest = hasPermission(user, "three_pl.dispatch_request");
+
   return (
     <div className="flex flex-1 flex-col">
       <TopBar user={user} />
@@ -56,7 +58,11 @@ export default async function ThreePLLotDetailPage({ params }: Props) {
             backLabel="3PL storage"
           />
 
-          <LotDetailShell detail={detail} companyDefaults={defaults} />
+          <LotDetailShell
+            detail={detail}
+            companyDefaults={defaults}
+            canDispatchRequest={canDispatchRequest}
+          />
         </div>
       </main>
     </div>
