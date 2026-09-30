@@ -54,6 +54,14 @@ export const CELL_PURPOSES: PurposeMeta[] = [
       "bg-blue-500/10 text-blue-700 border border-blue-500/30 dark:text-blue-400",
   },
   {
+    value: "production_feed",
+    label: "Production feed",
+    description:
+      "Raw-material staging inside a production facility. Warehouse pickers land a released MO's transfer here so floor operators can pick it up when the run starts — a production site without one physically can't stage an MO.",
+    chipClassName:
+      "bg-teal-500/10 text-teal-700 border border-teal-500/30 dark:text-teal-400",
+  },
+  {
     value: "finished_quarantine",
     label: "Finished quarantine",
     description:

@@ -48,7 +48,9 @@ import { invalidateAudit } from "@/lib/audit/invalidator";
 import type {
   Floor,
   StorageCell,
+  StorageCellPurpose,
   StorageTag,
+  WarehouseKind,
   WarehouseReadiness,
 } from "@/lib/types";
 import type { ErrorResult } from "@/lib/errors/server";
@@ -106,6 +108,10 @@ interface WarehousePlanEditorProps {
   warehouseUuid: string;
   warehouseId: number;
   warehouseName: string;
+  /** Facility discriminator — the readiness banner uses a different
+   *  required-purpose set + chip list for `production_facility` than
+   *  for `warehouse`. See ReadinessBanner. */
+  warehouseKind: WarehouseKind;
   /** Live coverage check from the server — counts per cell purpose +
    *  blocker list for any required purpose with zero cells. Drives the
    *  readiness banner above the editor; the receive endpoint refuses
@@ -208,6 +214,7 @@ export function WarehousePlanEditor({
   warehouseUuid,
   warehouseId,
   warehouseName,
+  warehouseKind,
   readiness,
   floors,
   storageTags,
@@ -2555,6 +2562,7 @@ export function WarehousePlanEditor({
         <ReadinessBanner
           readiness={readiness}
           warehouseName={warehouseName}
+          warehouseKind={warehouseKind}
           canEdit={canEdit}
         />
       </div>
@@ -3688,17 +3696,58 @@ function SaveStatusPill({
  * Memoized so it only re-renders when the readiness snapshot or
  * warehouseName actually change.
  */
+// Chip strip + required-purpose set differ by facility kind. A
+// warehouse takes vendor receipts (needs quarantine / hold / rejected
+// for the goods-in verdict, plus finished_quarantine for MO output),
+// so its chips also show 3PL storage + dispatch. A production
+// facility gets raw material via warehouse transfer, so its concerns
+// are production_feed (staging), finished_quarantine (output) and
+// R&D. Regular is shown for both as a general-storage counter but
+// never required (it's the default purpose).
+const WAREHOUSE_PURPOSES: StorageCellPurpose[] = [
+  "regular",
+  "quarantine",
+  "hold",
+  "rejected",
+  "dispatch",
+  "finished_quarantine",
+  "three_pl_storage",
+  "rnd",
+];
+const WAREHOUSE_REQUIRED: StorageCellPurpose[] = [
+  "quarantine",
+  "hold",
+  "rejected",
+  "finished_quarantine",
+];
+const PRODUCTION_PURPOSES: StorageCellPurpose[] = [
+  "regular",
+  "production_feed",
+  "finished_quarantine",
+  "rnd",
+];
+const PRODUCTION_REQUIRED: StorageCellPurpose[] = [
+  "production_feed",
+  "finished_quarantine",
+  "rnd",
+];
+
 const ReadinessBanner = memo(function ReadinessBanner({
   readiness,
   warehouseName,
+  warehouseKind,
   canEdit,
 }: {
   readiness: WarehouseReadiness;
   warehouseName: string;
+  warehouseKind: WarehouseKind;
   canEdit: boolean;
 }) {
   const ready = readiness.ready;
   const counts = readiness.cell_counts_by_purpose;
+  const isProduction = warehouseKind === "production_facility";
+  const purposes = isProduction ? PRODUCTION_PURPOSES : WAREHOUSE_PURPOSES;
+  const requiredSet = isProduction ? PRODUCTION_REQUIRED : WAREHOUSE_REQUIRED;
   // Collapsed by default so the missing-purpose reason list doesn't
   // steal the top third of the screen once the operator has read it
   // once. Preference persists per warehouse so a plan editor pinned
@@ -3723,23 +3772,13 @@ const ReadinessBanner = memo(function ReadinessBanner({
       /* localStorage unavailable — swallow, state stays in memory */
     }
   }, [collapsed, storageKey]);
-  const purposes: Array<
-    | "regular"
-    | "quarantine"
-    | "hold"
-    | "rejected"
-    | "dispatch"
-    | "finished_quarantine"
-    | "three_pl_storage"
-  > = [
-    "regular",
-    "quarantine",
-    "hold",
-    "rejected",
-    "dispatch",
-    "finished_quarantine",
-    "three_pl_storage",
-  ];
+
+  const readyLabel = isProduction
+    ? `${warehouseName} is ready for production`
+    : `${warehouseName} is ready for goods-in`;
+  const notReadyLabel = isProduction
+    ? `${warehouseName} can't run production yet`
+    : `${warehouseName} can't accept goods-in yet`;
 
   return (
     <section
@@ -3755,21 +3794,13 @@ const ReadinessBanner = memo(function ReadinessBanner({
         ) : (
           <AlertTriangle className="size-4 text-destructive" />
         )}
-        <span className="font-semibold">
-          {ready
-            ? `${warehouseName} is ready for goods-in`
-            : `${warehouseName} can't accept goods-in yet`}
-        </span>
+        <span className="font-semibold">{ready ? readyLabel : notReadyLabel}</span>
         <span className="ml-auto inline-flex flex-wrap items-center gap-1">
           {purposes.map((p) => {
             const meta = purposeMeta(p);
             const count = counts[p] ?? 0;
             const isMissingRequired =
-              count === 0 &&
-              (p === "quarantine" ||
-                p === "hold" ||
-                p === "rejected" ||
-                p === "finished_quarantine");
+              count === 0 && requiredSet.includes(p);
             return (
               <span
                 key={p}

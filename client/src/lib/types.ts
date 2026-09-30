@@ -1673,6 +1673,7 @@ export type StorageCellPurpose =
   | "hold"
   | "rejected"
   | "dispatch"
+  | "production_feed"
   | "finished_quarantine"
   | "three_pl_storage"
   | "rnd";

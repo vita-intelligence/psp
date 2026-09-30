@@ -111,6 +111,7 @@ export default async function ProductionSiteEditPage({
           warehouseUuid={facility.uuid}
           warehouseId={facility.id}
           warehouseName={facility.name}
+          warehouseKind={facility.kind}
           readiness={facility.readiness}
           canEdit={canEdit}
         />

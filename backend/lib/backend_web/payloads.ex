@@ -141,7 +141,7 @@ defmodule BackendWeb.Payloads do
   end
 
   def warehouse(w) do
-    readiness = Backend.Warehouses.Readiness.check(w.id)
+    readiness = Backend.Warehouses.Readiness.check(w.id, w.kind)
 
     %{
       id: w.id,
