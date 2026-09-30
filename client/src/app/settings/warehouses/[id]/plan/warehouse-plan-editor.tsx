@@ -45,7 +45,12 @@ import {
 import { createCellAction } from "@/lib/storage-cells/actions";
 import { patchFloorCanvasAction } from "@/lib/floors/actions";
 import { invalidateAudit } from "@/lib/audit/invalidator";
-import type { Floor, StorageTag, WarehouseReadiness } from "@/lib/types";
+import type {
+  Floor,
+  StorageCell,
+  StorageTag,
+  WarehouseReadiness,
+} from "@/lib/types";
 import type { ErrorResult } from "@/lib/errors/server";
 import { purposeMeta } from "@/lib/storage-cells/purpose";
 import type {
@@ -59,6 +64,7 @@ import type {
   PathAnnotation,
   Point,
   RectAnnotation,
+  SelectionItem,
   SelectionSet,
   TextAnnotation,
   ToolMode,
@@ -873,50 +879,104 @@ export function WarehousePlanEditor({
    *  in a single snapshotted update so undo treats a group drag as
    *  one step. Callers (WallShape / LocationShape) snap dx/dy to the
    *  50cm grid before firing — no clamping happens here. Items that
-   *  aren't selected stay put. */
+   *  aren't selected stay put.
+   *
+   *  Multi-select drag support: pass `excludeAnchor` to move every
+   *  selected item *except* one — used mid-drag so peers follow the
+   *  pointer in real time while Konva's own drag machinery keeps
+   *  translating the anchor. Pass `onlyAnchor` for the mirror case
+   *  (fired on drag end to sync the anchor's state to its final
+   *  snapped position). `snapshot: false` skips the undo entry so
+   *  the per-frame peer moves collapse into one undo step. */
   const onSelectionMove = useCallback(
-    (dx: number, dy: number) => {
+    (
+      dx: number,
+      dy: number,
+      opts?: {
+        snapshot?: boolean;
+        excludeAnchor?: SelectionItem;
+        onlyAnchor?: SelectionItem;
+      },
+    ) => {
       if (dx === 0 && dy === 0) return;
+      const snapshot = opts?.snapshot ?? true;
+      const isAnchor = (it: SelectionItem): boolean => {
+        const a = opts?.excludeAnchor ?? opts?.onlyAnchor;
+        if (!a) return false;
+        if (a.kind !== it.kind) return false;
+        switch (a.kind) {
+          case "wall":
+          case "hole":
+          case "location":
+          case "text":
+          case "arrow":
+          case "path":
+          case "rect":
+            return (
+              (it as { id: string }).id === (a as { id: string }).id
+            );
+          case "outline":
+            return true;
+          case "outline-edge":
+            return (
+              (it as { index: number }).index ===
+              (a as { index: number }).index
+            );
+          case "hole-edge":
+            return (
+              (it as { holeId: string; index: number }).holeId ===
+                (a as { holeId: string }).holeId &&
+              (it as { index: number }).index ===
+                (a as { index: number }).index
+            );
+        }
+      };
+      const effective: SelectionSet = opts?.onlyAnchor
+        ? selection.filter(isAnchor)
+        : opts?.excludeAnchor
+          ? selection.filter((it) => !isAnchor(it))
+          : selection;
+      if (effective.length === 0) return;
       updateActiveFloor(
         (s) => {
           const wallIds = new Set(
-            selection
+            effective
               .filter((it): it is { kind: "wall"; id: string } => it.kind === "wall")
               .map((it) => it.id),
           );
           const locationIds = new Set(
-            selection
+            effective
               .filter(
                 (it): it is { kind: "location"; id: string } => it.kind === "location",
               )
               .map((it) => it.id),
           );
           const holeIds = new Set(
-            selection
+            effective
               .filter((it): it is { kind: "hole"; id: string } => it.kind === "hole")
               .map((it) => it.id),
           );
           const textIds = new Set(
-            selection
+            effective
               .filter((it): it is { kind: "text"; id: string } => it.kind === "text")
               .map((it) => it.id),
           );
           const arrowIds = new Set(
-            selection
+            effective
               .filter((it): it is { kind: "arrow"; id: string } => it.kind === "arrow")
               .map((it) => it.id),
           );
           const pathIds = new Set(
-            selection
+            effective
               .filter((it): it is { kind: "path"; id: string } => it.kind === "path")
               .map((it) => it.id),
           );
           const rectIds = new Set(
-            selection
+            effective
               .filter((it): it is { kind: "rect"; id: string } => it.kind === "rect")
               .map((it) => it.id),
           );
-          const outlineSelected = selection.some((it) => it.kind === "outline");
+          const outlineSelected = effective.some((it) => it.kind === "outline");
 
           const walls = wallIds.size
             ? s.walls.map((w) =>
@@ -991,7 +1051,7 @@ export function WarehousePlanEditor({
 
           return { ...s, walls, locations, texts, arrows, paths, rects, outline };
         },
-        { snapshot: true },
+        { snapshot },
       );
     },
     [selection, updateActiveFloor],
@@ -2154,22 +2214,37 @@ export function WarehousePlanEditor({
       ...deletedRows.map((l) => l.uuid),
     ]);
 
-    startSaving(async () => {
-      const floorRes = await patchFloorCanvasAction(
-        warehouseUuid,
-        state.meta.uuid,
-        canvasJsonFor(state) as unknown as Record<string, unknown>,
-      );
+    // Skip the floor-canvas PATCH when the only edits were on
+    // location rows (moved / renamed / added / deleted). The floor's
+    // canvas_json holds walls / outline / texts / arrows / paths /
+    // rects / viewport — none of which change when the operator drags
+    // a rack. Comparing serialised shapes is O(n) once per save and
+    // saves a whole HTTP round-trip that used to fire on every
+    // location move.
+    const nextCanvasJson = canvasJsonFor(state);
+    const canvasChanged =
+      JSON.stringify(nextCanvasJson) !== JSON.stringify(state.meta.canvas_json);
 
-      if (!floorRes.ok) {
-        setActionError(floorRes);
-        setSaveStatus("error");
-        autosaveInFlightRef.current = false;
-        rollbackFloorToServer(state.meta.id);
-        toast.error("Save failed — reverted changes", {
-          description: floorRes.detail,
-        });
-        return;
+    startSaving(async () => {
+      let updatedFloor = state.meta;
+      if (canvasChanged) {
+        const floorRes = await patchFloorCanvasAction(
+          warehouseUuid,
+          state.meta.uuid,
+          nextCanvasJson as unknown as Record<string, unknown>,
+        );
+
+        if (!floorRes.ok) {
+          setActionError(floorRes);
+          setSaveStatus("error");
+          autosaveInFlightRef.current = false;
+          rollbackFloorToServer(state.meta.id);
+          toast.error("Save failed — reverted changes", {
+            description: floorRes.detail,
+          });
+          return;
+        }
+        updatedFloor = floorRes.floor;
       }
 
       // Also stash the server-assigned code so the canvas label
@@ -2177,7 +2252,12 @@ export function WarehousePlanEditor({
       // round-trip through router.refresh().
       const tempIdToServerData = new Map<
         string,
-        { id: number; uuid: string; code: string | null }
+        {
+          id: number;
+          uuid: string;
+          code: string | null;
+          cells: StorageCell[];
+        }
       >();
 
       for (const loc of newRows) {
@@ -2214,32 +2294,20 @@ export function WarehousePlanEditor({
           });
           return;
         }
-        if (loc.tempId) {
-          tempIdToServerData.set(loc.tempId, {
-            id: res.storage_location.id,
-            uuid: res.storage_location.uuid,
-            code: res.storage_location.code,
-          });
-        }
-
         // Copy-paste ferries cells alongside the location; the
         // clipboard row stashes them on `pendingCells` and we POST
-        // each one against the freshly-minted location uuid in
-        // ordinal order so the pasted rack keeps the same
-        // bottom-to-top layout as the source. Sequential (not
-        // parallel) so an early failure short-circuits and the
-        // rollback toast points at the offending cell rather than
-        // a random parallel loser.
+        // them against the freshly-minted location uuid in parallel
+        // (Promise.all) — pasting a rack with 6 levels used to fire
+        // 6 sequential round-trips; now they overlap so the "Saving"
+        // pill clears in a fraction of the time. Ordering is
+        // preserved via the `ordinal` payload field, not the request
+        // order.
         const pendingCells = loc.pendingCells ?? [];
+        let createdCells: StorageCell[] = [];
         if (pendingCells.length > 0) {
-          const orderedCells = [...pendingCells].sort(
-            (a, b) => a.ordinal - b.ordinal,
-          );
-          for (const cell of orderedCells) {
-            const cellRes = await createCellAction(
-              warehouseUuid,
-              res.storage_location.uuid,
-              {
+          const cellResults = await Promise.all(
+            pendingCells.map((cell) =>
+              createCellAction(warehouseUuid, res.storage_location.uuid, {
                 ordinal: cell.ordinal,
                 name: cell.name,
                 width_m: cell.width_m,
@@ -2249,19 +2317,38 @@ export function WarehousePlanEditor({
                 tags: cell.tags,
                 purpose: cell.purpose,
                 notes: cell.notes,
-              },
-            );
-            if (!cellRes.ok) {
-              setActionError(cellRes);
-              setSaveStatus("error");
-              autosaveInFlightRef.current = false;
-              rollbackFloorToServer(state.meta.id);
-              toast.error("Save failed — reverted changes", {
-                description: cellRes.detail,
-              });
-              return;
-            }
+              }),
+            ),
+          );
+          const failure = cellResults.find((r) => !r.ok);
+          if (failure && !failure.ok) {
+            setActionError(failure);
+            setSaveStatus("error");
+            autosaveInFlightRef.current = false;
+            rollbackFloorToServer(state.meta.id);
+            toast.error("Save failed — reverted changes", {
+              description: failure.detail,
+            });
+            return;
           }
+          createdCells = cellResults
+            .filter((r): r is { ok: true; cell: StorageCell } => r.ok)
+            .map((r) => r.cell);
+        }
+
+        if (loc.tempId) {
+          tempIdToServerData.set(loc.tempId, {
+            id: res.storage_location.id,
+            uuid: res.storage_location.uuid,
+            code: res.storage_location.code,
+            // Pass the created cells to the state merge below so the
+            // pasted rack's drawer shows its levels immediately —
+            // without this the local `cells` array stays empty until
+            // a full router.refresh, and the operator clicking
+            // "Subdivide" or "+" would stack a new level on top of
+            // the invisible ones the server already knows about.
+            cells: createdCells,
+          });
         }
       }
 
@@ -2327,11 +2414,12 @@ export function WarehousePlanEditor({
                   code: remote.code,
                   tempId: undefined,
                   dirty: false,
-                  // pendingCells were flushed to the server as part
-                  // of this save; drop them so the next debounce
-                  // tick doesn't try to re-POST the same rows. The
-                  // hydrated `cells` array will land on the next
-                  // snapshot/revalidate.
+                  // Hydrate `cells` from the create-cell responses so
+                  // the properties drawer stops showing "Subdivide
+                  // into levels" for a rack that already has them
+                  // server-side. pendingCells was the queue; cells is
+                  // the truth now.
+                  cells: remote.cells,
                   pendingCells: undefined,
                 };
               }
@@ -2350,7 +2438,7 @@ export function WarehousePlanEditor({
           ...prev,
           [state.meta.id]: {
             ...current,
-            meta: floorRes.floor,
+            meta: updatedFloor,
             locations: merged,
             dirty: false,
           },
@@ -2372,7 +2460,7 @@ export function WarehousePlanEditor({
   ]);
 
   // Debounced autosave. Any dirty state (floor canvas OR any
-  // location row) resets an 800ms timer; when it fires, onSave
+  // location row) resets a 400ms timer; when it fires, onSave
   // runs. The re-entrancy guard in onSave handles the case where
   // the user keeps editing during a save round-trip.
   //
@@ -2396,7 +2484,7 @@ export function WarehousePlanEditor({
     if (autosaveDebounceRef.current) clearTimeout(autosaveDebounceRef.current);
     autosaveDebounceRef.current = setTimeout(() => {
       onSave();
-    }, 800);
+    }, 400);
 
     return () => {
       if (autosaveDebounceRef.current) {

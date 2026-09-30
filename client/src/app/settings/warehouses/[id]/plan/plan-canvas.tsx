@@ -126,12 +126,23 @@ interface PlanCanvasProps {
    *  `onRectUpdate` — canvas does not delete internally, but the
    *  prop exists so the parent can pass through consistently. */
   onRectDelete: (id: string) => void;
-  /** Translate every selected item by (dx, dy) cm in one snapshot.
-   *  Fires once on drag end for the wall / location the user grabbed;
-   *  the parent applies the delta to every selected item so a group
-   *  drag is a single undo step. dx/dy are already snapped to 50cm.
-   *  For a single-selected item this collapses to a normal move. */
-  onSelectionMove: (dx: number, dy: number) => void;
+  /** Translate every selected item by (dx, dy) cm.
+   *  For a single-selected item this collapses to a normal move.
+   *  Multi-select drag uses `opts.excludeAnchor` on `onDragMove` so
+   *  peer shapes follow the pointer live while Konva drives the
+   *  anchor natively; the final `onDragEnd` fires with `onlyAnchor`
+   *  to commit the anchor's snapped position. `snapshot: false`
+   *  suppresses the undo entry so the whole drag collapses into one
+   *  undo step. dx/dy are cm; callers snap before firing. */
+  onSelectionMove: (
+    dx: number,
+    dy: number,
+    opts?: {
+      snapshot?: boolean;
+      excludeAnchor?: SelectionItem;
+      onlyAnchor?: SelectionItem;
+    },
+  ) => void;
   onOutlineCommitted: (points: Point[]) => void;
   onHoleCommitted: (points: Point[]) => void;
   /** Live-collab pointer broadcast. Called on every stage mousemove
@@ -299,6 +310,16 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
       () => collectSnapTargets(walls, outline),
       [walls, outline],
     );
+
+    // Outline is the single unique draggable that lives inline (not
+    // a memo'd child shape) so its group-drag handlers are wired up
+    // here at the top of PlanCanvas. Same live-peer-follow semantics
+    // as WallShape / LocationShape / etc.
+    const outlineDrag = useGroupDrag({
+      anchor: { kind: "outline" },
+      onGroupMove: onSelectionMove,
+      mode: "offset",
+    });
 
     /** Pick the right behaviour for a shape click: shift / ctrl /
      *  cmd toggles, anything else replaces. Centralised here so every
@@ -1002,12 +1023,9 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
                   isSelected(selection, { kind: "outline" })
                 }
                 dragBoundFunc={gridSnapDragBound}
-                onDragEnd={(e) => {
-                  const dx = snapCm(e.target.x());
-                  const dy = snapCm(e.target.y());
-                  e.target.position({ x: 0, y: 0 });
-                  if (dx !== 0 || dy !== 0) onSelectionMove(dx, dy);
-                }}
+                onDragStart={outlineDrag.onDragStart}
+                onDragMove={outlineDrag.onDragMove}
+                onDragEnd={outlineDrag.onDragEnd}
               />
               {/* Per-edge selectable strokes — each edge intercepts
                   clicks on top of the fill so it can be bowed
@@ -1521,6 +1539,111 @@ type SelectHandler = (
   e: Konva.KonvaEventObject<MouseEvent | TouchEvent>,
 ) => void;
 
+/** Selection-move signature reused by every draggable shape. Matches
+ *  the `onSelectionMove` prop on PlanCanvas; kept as a named type so
+ *  each shape's props stay legible. */
+type GroupMoveFn = (
+  dx: number,
+  dy: number,
+  opts?: {
+    snapshot?: boolean;
+    excludeAnchor?: SelectionItem;
+    onlyAnchor?: SelectionItem;
+  },
+) => void;
+
+/** Wire onDragStart/onDragMove/onDragEnd handlers that translate
+ *  every OTHER selected shape as the pointer moves — so multi-select
+ *  drags don't look frozen until release. The dragged shape (the
+ *  "anchor") is driven by Konva natively and its React state is
+ *  written once, on drag end, at the final snapped position.
+ *
+ *  Two coord conventions:
+ *   • `offset` — the shape has no explicit x/y prop (Wall / Arrow /
+ *     Rect / Text / Path / Hole polygon). Konva's `node.x()` starts
+ *     at 0 and equals the drag translation. On dragEnd we reset the
+ *     node back to (0, 0) so React state's new coords render at the
+ *     right spot.
+ *   • `absolute` — the shape's Group binds `x={location.x}` (only
+ *     LocationShape today). `node.x()` starts at that origin. On
+ *     dragEnd we leave the Konva position at `origin + snappedDelta`
+ *     so the anchor doesn't visually snap back to origin while React
+ *     catches up.
+ *
+ *  The undo snapshot is taken lazily — on the first frame that
+ *  actually moves — so the whole drag collapses into one undo step,
+ *  and cancelled drags (dragBound rejected everything) don't
+ *  pollute history. */
+function useGroupDrag({
+  anchor,
+  onGroupMove,
+  mode,
+  originX = 0,
+  originY = 0,
+}: {
+  anchor: SelectionItem;
+  onGroupMove: GroupMoveFn;
+  mode: "offset" | "absolute";
+  originX?: number;
+  originY?: number;
+}) {
+  const lastReported = useRef({ x: 0, y: 0, snapshotted: false });
+  return {
+    onDragStart: () => {
+      lastReported.current = { x: 0, y: 0, snapshotted: false };
+    },
+    onDragMove: (e: Konva.KonvaEventObject<DragEvent>) => {
+      const currentDx = e.target.x() - originX;
+      const currentDy = e.target.y() - originY;
+      const frameDx = currentDx - lastReported.current.x;
+      const frameDy = currentDy - lastReported.current.y;
+      if (frameDx === 0 && frameDy === 0) return;
+      onGroupMove(frameDx, frameDy, {
+        excludeAnchor: anchor,
+        snapshot: !lastReported.current.snapshotted,
+      });
+      lastReported.current = {
+        x: currentDx,
+        y: currentDy,
+        snapshotted: true,
+      };
+    },
+    onDragEnd: (e: Konva.KonvaEventObject<DragEvent>) => {
+      const rawDx = e.target.x() - originX;
+      const rawDy = e.target.y() - originY;
+      const snappedDx = snapCm(rawDx);
+      const snappedDy = snapCm(rawDy);
+      if (mode === "offset") {
+        e.target.position({ x: 0, y: 0 });
+      } else {
+        e.target.position({
+          x: originX + snappedDx,
+          y: originY + snappedDy,
+        });
+      }
+      // Peer correction: if dragBound didn't perfectly snap in real
+      // time we may have over/under-reported the total to peers by a
+      // few centimetres — reconcile once at the end.
+      const correctionDx = snappedDx - lastReported.current.x;
+      const correctionDy = snappedDy - lastReported.current.y;
+      if (correctionDx !== 0 || correctionDy !== 0) {
+        onGroupMove(correctionDx, correctionDy, {
+          excludeAnchor: anchor,
+          snapshot: !lastReported.current.snapshotted,
+        });
+        lastReported.current.snapshotted = true;
+      }
+      // Commit the anchor's state to the final snapped position.
+      if (snappedDx !== 0 || snappedDy !== 0) {
+        onGroupMove(snappedDx, snappedDy, {
+          onlyAnchor: anchor,
+          snapshot: !lastReported.current.snapshotted,
+        });
+      }
+    },
+  };
+}
+
 const WallShape = memo(function WallShape({
   wall,
   selected,
@@ -1536,14 +1659,19 @@ const WallShape = memo(function WallShape({
   viewportScale: number;
   onSelect: SelectHandler;
   onBowChange: (bow: number) => void;
-  /** Fire on drag end of this wall — the canvas-level handler
-   *  applies the snapped (dx, dy) translation to every selected
-   *  item so a multi-select drag is a single undo step. The wall
-   *  is itself part of the selection, so it moves too. */
-  onGroupMove: (dx: number, dy: number) => void;
+  /** Group-move channel — this shape emits per-frame deltas as the
+   *  operator drags so every other selected shape follows the pointer
+   *  in real time. Konva translates the wall itself natively; state
+   *  for the wall is committed once on drag end via `onlyAnchor`. */
+  onGroupMove: GroupMoveFn;
 }) {
   const bow = wall.bow ?? 0;
   const isCurved = Math.abs(bow) > 0.5;
+  const dragHandlers = useGroupDrag({
+    anchor: { kind: "wall", id: wall.id },
+    onGroupMove,
+    mode: "offset",
+  });
 
   const hasCustomColor = isHexColor(wall.color);
   const baseColor = hasCustomColor ? wall.color : "rgb(45,45,45)";
@@ -1562,17 +1690,6 @@ const WallShape = memo(function WallShape({
       }
     : { shadowEnabled: false };
   const draggable = !readOnly && selected;
-
-  // Common drag end: snap the Konva node offset to the 50cm grid,
-  // fire the canvas-level handler with that delta, then zero the
-  // node so the next render (which has the new wall coords baked
-  // into `points`) doesn't double-offset.
-  const handleDragEnd = (e: Konva.KonvaEventObject<DragEvent>) => {
-    const dx = snapCm(e.target.x());
-    const dy = snapCm(e.target.y());
-    e.target.position({ x: 0, y: 0 });
-    if (dx !== 0 || dy !== 0) onGroupMove(dx, dy);
-  };
 
   // Straight wall is rendered as a Konva.Line so we keep the well-
   // tested hit detection. Curved walls use a Shape with sceneFunc +
@@ -1601,7 +1718,9 @@ const WallShape = memo(function WallShape({
       dragBoundFunc={draggable ? gridSnapDragBound : undefined}
       onClick={readOnly ? undefined : onSelect}
       onTap={readOnly ? undefined : onSelect}
-      onDragEnd={draggable ? handleDragEnd : undefined}
+      onDragStart={draggable ? dragHandlers.onDragStart : undefined}
+      onDragMove={draggable ? dragHandlers.onDragMove : undefined}
+      onDragEnd={draggable ? dragHandlers.onDragEnd : undefined}
       {...selectionShadow}
     />
   ) : (
@@ -1615,7 +1734,9 @@ const WallShape = memo(function WallShape({
       hitStrokeWidth={28}
       draggable={draggable}
       dragBoundFunc={draggable ? gridSnapDragBound : undefined}
-      onDragEnd={draggable ? handleDragEnd : undefined}
+      onDragStart={draggable ? dragHandlers.onDragStart : undefined}
+      onDragMove={draggable ? dragHandlers.onDragMove : undefined}
+      onDragEnd={draggable ? dragHandlers.onDragEnd : undefined}
       {...selectionShadow}
     />
   );
@@ -1913,15 +2034,19 @@ const HoleOutline = memo(function HoleOutline({
     e: Konva.KonvaEventObject<MouseEvent | TouchEvent>,
   ) => void;
   onEdgeBowChange: (index: number, bow: number) => void;
-  /** Same contract as walls / locations — drag end fires the
-   *  canvas-level selection translator with snapped (dx, dy). The
-   *  parent applies the delta to every selected item including
-   *  this hole. */
-  onGroupMove: (dx: number, dy: number) => void;
+  /** Group-move channel — see WallShape / useGroupDrag. Fires per
+   *  frame while dragged so peer selected shapes follow the pointer
+   *  in real time. */
+  onGroupMove: GroupMoveFn;
 }) {
-  if (hole.points.length < 2) return null;
   const holeSelected = isSelected(selection, { kind: "hole", id: hole.id });
   const draggable = !readOnly && holeSelected;
+  const dragHandlers = useGroupDrag({
+    anchor: { kind: "hole", id: hole.id },
+    onGroupMove,
+    mode: "offset",
+  });
+  if (hole.points.length < 2) return null;
 
   // Tiny invisible Shape giving the hole interior a hit area so
   // tapping the cutout selects the whole hole (matches pre-curve
@@ -1945,16 +2070,9 @@ const HoleOutline = memo(function HoleOutline({
           onTap={readOnly ? undefined : onSelectHole}
           draggable={draggable}
           dragBoundFunc={draggable ? gridSnapDragBound : undefined}
-          onDragEnd={
-            draggable
-              ? (e) => {
-                  const dx = snapCm(e.target.x());
-                  const dy = snapCm(e.target.y());
-                  e.target.position({ x: 0, y: 0 });
-                  if (dx !== 0 || dy !== 0) onGroupMove(dx, dy);
-                }
-              : undefined
-          }
+          onDragStart={draggable ? dragHandlers.onDragStart : undefined}
+          onDragMove={draggable ? dragHandlers.onDragMove : undefined}
+          onDragEnd={draggable ? dragHandlers.onDragEnd : undefined}
         />
       )}
       {hole.points.map((_, i) => {
@@ -2001,11 +2119,10 @@ const LocationShape = memo(function LocationShape({
   selected: boolean;
   readOnly: boolean;
   onSelect: SelectHandler;
-  /** Fire on drag end of this location — the canvas-level handler
-   *  applies the snapped (dx, dy) to every selected item so group
-   *  moves are a single undo step. The dragged location is always
-   *  selected so it moves too. */
-  onGroupMove: (dx: number, dy: number) => void;
+  /** Group-move channel — see WallShape / useGroupDrag. Fires per
+   *  frame while dragged so peer selected racks / walls / etc.
+   *  follow the pointer in real time. */
+  onGroupMove: GroupMoveFn;
   /** Fire when the user double-clicks the location. The parent
    *  opens an inline input overlay over this location so the
    *  operator can rename without opening the properties drawer. */
@@ -2019,6 +2136,16 @@ const LocationShape = memo(function LocationShape({
     fill: hexToRgba(baseStroke, 0.18),
     stroke: baseStroke,
   };
+  const dragHandlers = useGroupDrag({
+    anchor: {
+      kind: "location",
+      id: String(location.tempId ?? location.uuid),
+    },
+    onGroupMove,
+    mode: "absolute",
+    originX: location.x,
+    originY: location.y,
+  });
 
   return (
     <Group
@@ -2032,15 +2159,9 @@ const LocationShape = memo(function LocationShape({
       onTap={readOnly ? undefined : onSelect}
       onDblClick={readOnly ? undefined : onEditLabel}
       onDblTap={readOnly ? undefined : onEditLabel}
-      onDragEnd={(e) => {
-        const node = e.target;
-        const nx = snapCm(node.x());
-        const ny = snapCm(node.y());
-        node.position({ x: nx, y: ny });
-        const dx = nx - location.x;
-        const dy = ny - location.y;
-        if (dx !== 0 || dy !== 0) onGroupMove(dx, dy);
-      }}
+      onDragStart={dragHandlers.onDragStart}
+      onDragMove={dragHandlers.onDragMove}
+      onDragEnd={dragHandlers.onDragEnd}
     >
       <Rect
         width={location.width}
@@ -2102,10 +2223,15 @@ const ArrowShape = memo(function ArrowShape({
   readOnly: boolean;
   viewportScale: number;
   onSelect: SelectHandler;
-  onGroupMove: (dx: number, dy: number) => void;
+  onGroupMove: GroupMoveFn;
 }) {
   const hasCustomColor = isHexColor(arrow.color);
   const baseColor = hasCustomColor ? arrow.color : "rgb(15,23,42)";
+  const dragHandlers = useGroupDrag({
+    anchor: { kind: "arrow", id: arrow.id },
+    onGroupMove,
+    mode: "offset",
+  });
   // Keep the custom colour visible when selected — indicate
   // selection with a blue shadow glow instead of overriding the
   // stroke. Falls back to the old "stroke turns blue" cue only when
@@ -2123,13 +2249,6 @@ const ArrowShape = memo(function ArrowShape({
       }
     : { shadowEnabled: false };
 
-  const handleDragEnd = (e: Konva.KonvaEventObject<DragEvent>) => {
-    const dx = snapCm(e.target.x());
-    const dy = snapCm(e.target.y());
-    e.target.position({ x: 0, y: 0 });
-    if (dx !== 0 || dy !== 0) onGroupMove(dx, dy);
-  };
-
   return (
     <Arrow
       points={[arrow.x1, arrow.y1, arrow.x2, arrow.y2]}
@@ -2145,7 +2264,9 @@ const ArrowShape = memo(function ArrowShape({
       dragBoundFunc={draggable ? gridSnapDragBound : undefined}
       onClick={readOnly ? undefined : onSelect}
       onTap={readOnly ? undefined : onSelect}
-      onDragEnd={draggable ? handleDragEnd : undefined}
+      onDragStart={draggable ? dragHandlers.onDragStart : undefined}
+      onDragMove={draggable ? dragHandlers.onDragMove : undefined}
+      onDragEnd={draggable ? dragHandlers.onDragEnd : undefined}
       {...selectionShadow}
     />
   );
@@ -2162,11 +2283,16 @@ const RectShape = memo(function RectShape({
   selected: boolean;
   readOnly: boolean;
   onSelect: SelectHandler;
-  /** Fire on drag end — the canvas-level handler applies the
-   *  snapped (dx, dy) to every selected item so a rect drag can
-   *  ride a multi-select group move as a single undo step. */
-  onGroupMove: (dx: number, dy: number) => void;
+  /** Group-move channel — see WallShape / useGroupDrag. */
+  onGroupMove: GroupMoveFn;
 }) {
+  const dragHandlers = useGroupDrag({
+    anchor: { kind: "rect", id: rect.id },
+    onGroupMove,
+    mode: "absolute",
+    originX: rect.x,
+    originY: rect.y,
+  });
   const hasFill = isHexColor(rect.fill);
   // Light indigo default matches the RectBody defaultColor + gives
   // freshly-drawn rooms a visible-but-neutral tint without dominating
@@ -2209,15 +2335,9 @@ const RectShape = memo(function RectShape({
       dragBoundFunc={draggable ? gridSnapDragBound : undefined}
       onClick={readOnly ? undefined : onSelect}
       onTap={readOnly ? undefined : onSelect}
-      onDragEnd={(e) => {
-        const node = e.target;
-        const nx = snapCm(node.x());
-        const ny = snapCm(node.y());
-        node.position({ x: nx, y: ny });
-        const dx = nx - rect.x;
-        const dy = ny - rect.y;
-        if (dx !== 0 || dy !== 0) onGroupMove(dx, dy);
-      }}
+      onDragStart={draggable ? dragHandlers.onDragStart : undefined}
+      onDragMove={draggable ? dragHandlers.onDragMove : undefined}
+      onDragEnd={draggable ? dragHandlers.onDragEnd : undefined}
     >
       <Rect
         width={rect.width}
@@ -2259,9 +2379,16 @@ const TextShape = memo(function TextShape({
   readOnly: boolean;
   viewportScale: number;
   onSelect: SelectHandler;
-  onGroupMove: (dx: number, dy: number) => void;
+  onGroupMove: GroupMoveFn;
   onEditRequest: (id: string) => void;
 }) {
+  const dragHandlers = useGroupDrag({
+    anchor: { kind: "text", id: text.id },
+    onGroupMove,
+    mode: "absolute",
+    originX: text.x,
+    originY: text.y,
+  });
   const hasCustomColor = isHexColor(text.color);
   const baseColor = hasCustomColor ? text.color : "rgb(15,23,42)";
   const stroke = selected && !hasCustomColor ? "rgb(59,130,246)" : baseColor;
@@ -2293,19 +2420,9 @@ const TextShape = memo(function TextShape({
       onTap={readOnly ? undefined : onSelect}
       onDblClick={readOnly ? undefined : () => onEditRequest(text.id)}
       onDblTap={readOnly ? undefined : () => onEditRequest(text.id)}
-      onDragEnd={
-        draggable
-          ? (e) => {
-              const node = e.target;
-              const nx = snapCm(node.x());
-              const ny = snapCm(node.y());
-              node.position({ x: nx, y: ny });
-              const dx = nx - text.x;
-              const dy = ny - text.y;
-              if (dx !== 0 || dy !== 0) onGroupMove(dx, dy);
-            }
-          : undefined
-      }
+      onDragStart={draggable ? dragHandlers.onDragStart : undefined}
+      onDragMove={draggable ? dragHandlers.onDragMove : undefined}
+      onDragEnd={draggable ? dragHandlers.onDragEnd : undefined}
     >
       <Rect
         width={text.width}
@@ -2347,8 +2464,13 @@ const PathShape = memo(function PathShape({
   readOnly: boolean;
   viewportScale: number;
   onSelect: SelectHandler;
-  onGroupMove: (dx: number, dy: number) => void;
+  onGroupMove: GroupMoveFn;
 }) {
+  const dragHandlers = useGroupDrag({
+    anchor: { kind: "path", id: path.id },
+    onGroupMove,
+    mode: "offset",
+  });
   const hasCustomColor = isHexColor(path.color);
   const baseColor = hasCustomColor ? path.color : "rgb(245,158,11)";
   const stroke = selected && !hasCustomColor ? "rgb(59,130,246)" : baseColor;
@@ -2369,13 +2491,6 @@ const PathShape = memo(function PathShape({
   const flat: number[] = [];
   for (const pt of path.points) flat.push(pt.x, pt.y);
 
-  const handleDragEnd = (e: Konva.KonvaEventObject<DragEvent>) => {
-    const dx = snapCm(e.target.x());
-    const dy = snapCm(e.target.y());
-    e.target.position({ x: 0, y: 0 });
-    if (dx !== 0 || dy !== 0) onGroupMove(dx, dy);
-  };
-
   if (path.points.length < 2) return null;
 
   return (
@@ -2392,7 +2507,9 @@ const PathShape = memo(function PathShape({
         dragBoundFunc={draggable ? gridSnapDragBound : undefined}
         onClick={readOnly ? undefined : onSelect}
         onTap={readOnly ? undefined : onSelect}
-        onDragEnd={draggable ? handleDragEnd : undefined}
+        onDragStart={draggable ? dragHandlers.onDragStart : undefined}
+        onDragMove={draggable ? dragHandlers.onDragMove : undefined}
+        onDragEnd={draggable ? dragHandlers.onDragEnd : undefined}
         {...selectionShadow}
       />
       {/* Centre stripe — dashed so the path reads as a route rather
