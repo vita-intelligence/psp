@@ -323,19 +323,27 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
 
     /** Pick the right behaviour for a shape click: shift / ctrl /
      *  cmd toggles, anything else replaces. Centralised here so every
-     *  shape's onClick uses the same rule. */
+     *  shape's onClick uses the same rule.
+     *
+     *  When a draw tool is active the operator is laying down a new
+     *  shape — clicking on an existing wall / rect / location while
+     *  trying to drop a point must NOT hijack the click into a
+     *  selection. `beginDraw` handles the draft start regardless of
+     *  what was hit; this guard just silences the shape-level
+     *  selection side-effect. */
     const selectItem = useCallback(
       (
         item: SelectionItem,
         e: Konva.KonvaEventObject<MouseEvent | TouchEvent>,
       ) => {
+        if (DRAW_TOOLS.has(tool)) return;
         if (isAdditiveEvent(e)) {
           onSelectionChange(toggleSelection(selection, item));
         } else {
           onSelectionChange([item]);
         }
       },
-      [onSelectionChange, selection],
+      [onSelectionChange, selection, tool],
     );
 
     useImperativeHandle(
@@ -451,11 +459,12 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
     const beginDraw = useCallback(
       (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
         if (readOnly) return;
-        // The empty stage AND the floor outline both count as
-        // "background" for draw purposes: the operator's intent in
-        // any draw tool is to place a shape ON the floor, so clicking
-        // the floor itself should start the draw rather than select
-        // the outline.
+        // Draw tools lay down a NEW shape and must fire regardless of
+        // what was hit — a click on top of an existing wall / rect /
+        // location while in a draw tool is still the operator placing
+        // their next point. Only `select` needs the background gate
+        // (so marquee doesn't start on top of a shape the user meant
+        //  to click).
         const target = e.target;
         const isBackground =
           target === target.getStage() || target.name() === "floor-outline";
@@ -463,11 +472,11 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
         if (!p) return;
         const additive = isAdditiveEvent(e);
 
-        if (tool === "wall" && isBackground) {
+        if (tool === "wall") {
           setDraft({ kind: "wall", x1: p.x, y1: p.y, x2: p.x, y2: p.y });
-        } else if (tool === "arrow" && isBackground) {
+        } else if (tool === "arrow") {
           setDraft({ kind: "arrow", x1: p.x, y1: p.y, x2: p.x, y2: p.y });
-        } else if (tool === "location" && isBackground) {
+        } else if (tool === "location") {
           setDraft({
             kind: "location",
             x: snapCm(p.x - DEFAULT_LOCATION_CM / 2),
@@ -475,7 +484,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
             width: DEFAULT_LOCATION_CM,
             height: DEFAULT_LOCATION_CM,
           });
-        } else if (tool === "text" && isBackground) {
+        } else if (tool === "text") {
           setDraft({
             kind: "text",
             x: p.x,
@@ -483,7 +492,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
             width: DEFAULT_TEXT_WIDTH_CM,
             height: DEFAULT_TEXT_HEIGHT_CM,
           });
-        } else if (tool === "rect" && isBackground) {
+        } else if (tool === "rect") {
           // Room / zone rectangle. Same click-drag interaction as
           // location + text. Starts as a zero-size box at the pointer
           // and grows on updateDraw as the operator drags.
@@ -494,7 +503,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
             width: 0,
             height: 0,
           });
-        } else if (tool === "path" && isBackground) {
+        } else if (tool === "path") {
           // Multi-vertex polyline. Each click extends the draft;
           // double-click on the stage commits via dblCommitDraft.
           if (draft?.kind === "path") {
@@ -502,7 +511,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
           } else {
             setDraft({ kind: "path", points: [p] });
           }
-        } else if (tool === "outline" && isBackground) {
+        } else if (tool === "outline") {
           if (draft?.kind === "outline") {
             const first = draft.points[0];
             if (first && distance(p, first) < SNAP_THRESHOLD_PX / viewport.scale) {
@@ -515,7 +524,7 @@ export const PlanCanvas = forwardRef<PlanCanvasHandle, PlanCanvasProps>(
           } else {
             setDraft({ kind: "outline", points: [p] });
           }
-        } else if (tool === "hole" && isBackground) {
+        } else if (tool === "hole") {
           if (draft?.kind === "hole") {
             const first = draft.points[0];
             if (first && distance(p, first) < SNAP_THRESHOLD_PX / viewport.scale) {
