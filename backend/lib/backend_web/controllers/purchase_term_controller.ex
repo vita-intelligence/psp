@@ -33,15 +33,42 @@ defmodule BackendWeb.PurchaseTermController do
 
   # ----- reads ------------------------------------------------------
 
-  def list_for_vendor(conn, %{"vendor_id" => vendor_uuid}) do
+  def list_for_vendor(conn, %{"vendor_id" => vendor_uuid} = params) do
     actor = conn.assigns.current_user
 
     with %{} = vendor <- Vendors.get_for_company(actor.company_id, vendor_uuid) do
-      rows = PurchaseTerms.list_for_vendor(actor.company_id, vendor.id)
-      json(conn, %{purchase_terms: Enum.map(rows, &Payloads.purchase_term/1)})
+      # Switch to the paginated path when the FE sends any
+      # pagination / search param. Legacy callers that just hit the
+      # endpoint with no query string still get the flat list so
+      # nothing downstream breaks.
+      if paginated?(params) do
+        page =
+          PurchaseTerms.list_for_vendor_page(
+            actor.company_id,
+            vendor.id,
+            search: params["search"],
+            limit: params["limit"] || "50",
+            offset: params["offset"] || "0"
+          )
+
+        json(conn, %{
+          purchase_terms: Enum.map(page.items, &Payloads.purchase_term/1),
+          total: page.total,
+          has_more: page.has_more
+        })
+      else
+        rows = PurchaseTerms.list_for_vendor(actor.company_id, vendor.id)
+        json(conn, %{purchase_terms: Enum.map(rows, &Payloads.purchase_term/1)})
+      end
     else
       _ -> {:error, :not_found}
     end
+  end
+
+  defp paginated?(params) do
+    Map.has_key?(params, "search") or
+      Map.has_key?(params, "limit") or
+      Map.has_key?(params, "offset")
   end
 
   def list_for_item(conn, %{"item_id" => item_uuid}) do

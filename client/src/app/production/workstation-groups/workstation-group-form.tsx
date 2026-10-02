@@ -75,6 +75,9 @@ interface FormState {
   kind: WorkstationGroupKind;
   hourly_rate_enabled: boolean;
   hourly_rate: string;
+  /** Fallback operator wage — projection seed only. Reality from
+   *  HR kiosk sessions always wins when it exists. */
+  default_labour_rate_hourly: string;
   custom_working_hours: boolean;
   working_hours: WorkingHours;
   custom_holidays: boolean;
@@ -147,6 +150,7 @@ function initialFrom(group: WorkstationGroup | null): FormState {
       kind: "active_processing",
       hourly_rate_enabled: false,
       hourly_rate: "",
+      default_labour_rate_hourly: "",
       custom_working_hours: false,
       working_hours: {},
       custom_holidays: false,
@@ -162,6 +166,7 @@ function initialFrom(group: WorkstationGroup | null): FormState {
     kind: group.kind,
     hourly_rate_enabled: group.hourly_rate_enabled,
     hourly_rate: group.hourly_rate ?? "",
+    default_labour_rate_hourly: group.default_labour_rate_hourly ?? "",
     custom_working_hours: group.custom_working_hours,
     working_hours: (group.working_hours as WorkingHours) ?? {},
     custom_holidays: group.custom_holidays,
@@ -285,6 +290,8 @@ export function WorkstationGroupForm({
       hourly_rate: state.hourly_rate_enabled
         ? state.hourly_rate.trim() || null
         : null,
+      default_labour_rate_hourly:
+        state.default_labour_rate_hourly.trim() || null,
       custom_working_hours: state.custom_working_hours,
       working_hours: state.custom_working_hours
         ? (state.working_hours as Record<string, unknown>)
@@ -574,6 +581,23 @@ export function WorkstationGroupForm({
                     </span>{" "}
                     {company.currency_code} per hour of runtime.
                   </p>
+                  <ul className="mt-2 space-y-0.5 text-[11px] text-muted-foreground">
+                    <li>
+                      <span className="font-medium text-foreground">
+                        Stacks with routing
+                      </span>{" "}
+                      — step&apos;s Setup overhead + Per-unit cost still apply
+                      on top.
+                    </li>
+                    <li>
+                      <span className="font-medium text-foreground">
+                        Overrides equipment
+                      </span>{" "}
+                      — when ON, this rate wins over the sum of attached
+                      equipment&apos;s running costs. Turn OFF to let the
+                      equipment-attached numbers drive the group&apos;s rate.
+                    </li>
+                  </ul>
                 </div>
               </div>
               {state.hourly_rate_enabled && (
@@ -602,6 +626,50 @@ export function WorkstationGroupForm({
                   </div>
                 </div>
               )}
+            </div>
+
+            <div className="space-y-4 rounded-md border border-border/60 bg-muted/30 p-4">
+              <SectionTitle>Default operator wage (fallback)</SectionTitle>
+              <p className="text-xs text-muted-foreground">
+                Projection seed for cost calculations when no kiosk sessions
+                exist for this group yet. Reality from HR always wins — the
+                moment a worker runs a session on this group, the per-session
+                wage overrides this number. Leave blank to omit the labour
+                component from projections.
+              </p>
+              <div className="grid gap-2 sm:grid-cols-[200px_minmax(0,1fr)] sm:gap-4">
+                <Label
+                  htmlFor="default_labour_rate_hourly"
+                  className="pt-2.5 text-sm font-medium"
+                >
+                  Operator wage ({company.currency_code} / h)
+                </Label>
+                <div className="space-y-1.5">
+                  <div className="relative">
+                    <Input
+                      id="default_labour_rate_hourly"
+                      value={state.default_labour_rate_hourly}
+                      onChange={(e) =>
+                        setField(
+                          "default_labour_rate_hourly",
+                          e.target.value,
+                        )
+                      }
+                      onFocus={() => focusField("default_labour_rate_hourly")}
+                      onBlur={() => blurField("default_labour_rate_hourly")}
+                      inputMode="decimal"
+                      placeholder="0.00"
+                      className="h-10 font-mono"
+                    />
+                    <FieldEditingIndicator
+                      peer={fieldEditors.default_labour_rate_hourly}
+                    />
+                  </div>
+                  <FieldError
+                    messages={fieldErrors.default_labour_rate_hourly}
+                  />
+                </div>
+              </div>
             </div>
 
             <div className="space-y-4 rounded-md border border-border/60 bg-muted/30 p-4">

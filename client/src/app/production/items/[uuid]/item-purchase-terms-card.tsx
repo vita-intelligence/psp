@@ -36,9 +36,11 @@ export function ItemPurchaseTermsCard({ terms, prefs }: Props) {
       </header>
 
       <p className="mb-3 text-[11px] text-muted-foreground">
-        Vendor-negotiated commercial baselines. Edit these on each
-        vendor&rsquo;s detail page. The primary vendor&rsquo;s price
-        seeds this item&rsquo;s default cost when no PO history exists.
+        Vendor-negotiated commercial baselines with volume tiers.
+        Edit on each vendor&rsquo;s detail page. The primary
+        vendor&rsquo;s cheapest active tier seeds this item&rsquo;s
+        default cost when no PO history exists; proposals pick the
+        tier matching the ordered qty.
       </p>
 
       {terms.length === 0 ? (

@@ -123,6 +123,12 @@ defmodule Backend.Production.WorkstationCosts do
             machine_hourly_rate:
               effective_machine_rate(group, equipment_rate_by_group),
             avg_labour_hourly_rate: avg_labour,
+            # Admin-configured fallback wage. Only kicks in when
+            # the kiosk-session average above is nil (new group /
+            # no history yet). Callers that need a predictable
+            # labour rate for projection should walk:
+            # avg_labour → fallback_labour → nil.
+            fallback_labour_hourly_rate: group.default_labour_rate_hourly,
             avg_seconds_per_unit: avg_seconds,
             session_count: count,
             currency_code: currency_for(group)
@@ -315,16 +321,31 @@ defmodule Backend.Production.WorkstationCosts do
   #   3. Otherwise nil — vita-cff renders the routing cost as
   #      "unknown machine rate" and the operator knows to set one.
   defp effective_machine_rate(%WorkstationGroup{id: gid} = group, rates_by_group) do
-    case Map.get(rates_by_group, gid) do
-      %Decimal{} = sum ->
-        if Decimal.compare(sum, Decimal.new(0)) == :gt do
-          sum
-        else
-          static_rate(group)
-        end
+    # Priority flip (per operator intent):
+    #
+    #   1. If the group's "Charging a machine cost per hour" toggle
+    #      is ON (`hourly_rate_enabled=true`), that configured rate
+    #      is the explicit override — win over anything else.
+    #   2. Otherwise sum the running cost of equipment attached to
+    #      the workstations in this group — reality from physical
+    #      inventory.
+    #   3. Otherwise nil — the operator hasn't set a rate anywhere.
+    case static_rate(group) do
+      %Decimal{} = override ->
+        override
 
       _ ->
-        static_rate(group)
+        case Map.get(rates_by_group, gid) do
+          %Decimal{} = sum ->
+            if Decimal.compare(sum, Decimal.new(0)) == :gt do
+              sum
+            else
+              nil
+            end
+
+          _ ->
+            nil
+        end
     end
   end
 

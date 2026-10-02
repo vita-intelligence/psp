@@ -1287,6 +1287,7 @@ defmodule Backend.Production do
       Routing
       |> where([r], r.company_id == ^company_id)
       |> ListQueries.apply_search(opts[:search], @routing_search, {company_id, "routing"})
+      |> maybe_routing_scope_filter(opts[:scope])
       |> maybe_routing_item_filter(opts[:item_id])
       |> maybe_routing_bom_filter(opts[:bom_id])
       |> maybe_active_filter(opts[:is_active])
@@ -1295,10 +1296,36 @@ defmodule Backend.Production do
       |> maybe_routing_code_id_filter(code_id)
       |> ListQueries.apply_column_filters(column_filter, @routing_sortable)
       |> ListQueries.apply_sort(sort, @routing_sortable, @routing_default_sort)
-      |> preload([:item, :bom, :created_by, :updated_by])
+      |> preload([:item, :bom, :source_template, :created_by, :updated_by])
 
     ListQueries.paginate(Repo, base, sort, opts[:limit], opts[:cursor])
   end
+
+  @doc """
+  List template routings (`item_id IS NULL`) for a company. Returns
+  the full list eagerly — templates are expected to stay in the
+  dozens, not thousands. Pre-loads steps so NPD's picker gets the
+  shape it needs in one call.
+  """
+  def list_routing_templates(company_id) when is_integer(company_id) do
+    Routing
+    |> where([r], r.company_id == ^company_id and is_nil(r.item_id))
+    |> order_by([r], asc: r.name)
+    |> preload([
+      :created_by,
+      :updated_by,
+      steps: [:workstation_group, worker_assignments: :user]
+    ])
+    |> Repo.all()
+  end
+
+  defp maybe_routing_scope_filter(query, :template),
+    do: where(query, [r], is_nil(r.item_id))
+
+  defp maybe_routing_scope_filter(query, :snapshot),
+    do: where(query, [r], not is_nil(r.item_id))
+
+  defp maybe_routing_scope_filter(query, _), do: query
 
   defp maybe_routing_code_id_filter(query, nil), do: query
   defp maybe_routing_code_id_filter(query, :no_match), do: where(query, [r], false)
@@ -1362,6 +1389,7 @@ defmodule Backend.Production do
     |> preload([
       :item,
       :bom,
+      :source_template,
       :created_by,
       :updated_by,
       steps: [:workstation_group, worker_assignments: :user]
@@ -1370,21 +1398,31 @@ defmodule Backend.Production do
   end
 
   @doc """
-  Create a routing. `steps` and `default_worker_ids` (per step) are
-  pulled off attrs and replayed inside a single transaction.
+  Create a routing. Two shapes:
+
+    * **Template** — omit `item_id` (or pass nil). The row is
+      item-less and shows up on `/production/routings` as a reusable
+      recipe NPD picks from.
+    * **Snapshot** — pass `item_id` plus `source_template_id`. The
+      row is pinned to that item and records which template it came
+      from. Typically only created via `snapshot_from_template/3`,
+      not the raw settings form.
+
+  `steps` and `default_worker_ids` (per step) are pulled off attrs
+  and replayed inside a single transaction.
   """
   def create_routing(%User{} = actor, attrs) do
     attrs = stringify_keys(attrs)
     steps_attrs = pull_steps(attrs)
+    raw_item_id = attrs["item_id"]
 
-    with {:ok, item} <- fetch_output_item(actor, attrs["item_id"]),
-         :ok <- ensure_bommable_item_type(item),
-         :ok <- ensure_bom_for_item(actor, item.id, attrs["bom_id"]) do
+    with {:ok, item_id, item_for_name} <- resolve_routing_output_item(actor, raw_item_id),
+         :ok <- maybe_ensure_bom_for_item(actor, item_id, attrs["bom_id"]) do
       attrs =
         attrs
         |> Map.put("company_id", actor.company_id)
-        |> Map.put("item_id", item.id)
-        |> Map.put_new("name", default_routing_name(item))
+        |> Map.put("item_id", item_id)
+        |> Map.put_new("name", default_routing_name(item_for_name))
         |> Map.put("created_by_id", actor.id)
         |> Map.put("updated_by_id", actor.id)
 
@@ -1413,6 +1451,22 @@ defmodule Backend.Production do
     end
   end
 
+  # Templates don't carry an item (nil in → nil out, no DB lookup).
+  # Snapshots must resolve to an item in the same company.
+  defp resolve_routing_output_item(_actor, nil), do: {:ok, nil, nil}
+  defp resolve_routing_output_item(_actor, ""), do: {:ok, nil, nil}
+
+  defp resolve_routing_output_item(%User{} = actor, raw) do
+    with {:ok, item} <- fetch_output_item(actor, raw),
+         :ok <- ensure_bommable_item_type(item) do
+      {:ok, item.id, item}
+    end
+  end
+
+  defp maybe_ensure_bom_for_item(_actor, nil, _bom_id), do: :ok
+  defp maybe_ensure_bom_for_item(actor, item_id, bom_id),
+    do: ensure_bom_for_item(actor, item_id, bom_id)
+
   def update_routing(%User{} = actor, %Routing{} = routing, attrs) do
     attrs = stringify_keys(attrs)
     steps_attrs = pull_steps(attrs)
@@ -1425,7 +1479,7 @@ defmodule Backend.Production do
       |> Map.put("updated_by_id", actor.id)
 
     with :ok <-
-           (if Map.has_key?(attrs, "bom_id"),
+           (if Map.has_key?(attrs, "bom_id") and not is_nil(routing.item_id),
               do: ensure_bom_for_item(actor, routing.item_id, attrs["bom_id"]),
               else: :ok) do
       Repo.transaction(fn ->
@@ -1559,6 +1613,11 @@ defmodule Backend.Production do
   defp default_routing_name(%Item{name: name}),
     do: name <> " Routing"
 
+  # Templates must supply their own name — there's no item to derive
+  # one from. The changeset's `validate_required(:name)` will catch
+  # the empty case.
+  defp default_routing_name(nil), do: nil
+
   # If `bom_id` is present and not nil, ensure it belongs to the
   # same company AND points at the same output item as the routing.
   # A BOM for one item paired with a routing for another would
@@ -1597,11 +1656,113 @@ defmodule Backend.Production do
       notes: r.notes,
       item_id: r.item_id,
       bom_id: r.bom_id,
+      source_template_id: r.source_template_id,
       is_active: r.is_active,
       other_fixed_cost: r.other_fixed_cost,
       other_variable_cost: r.other_variable_cost,
       other_variable_cost_basis: r.other_variable_cost_basis
     }
+  end
+
+  @doc """
+  Snapshot a routing template onto an item.
+
+  Looks up the template by UUID, builds a per-item routing (`item_id`
+  set, `source_template_id` set) with steps copied verbatim from the
+  template — each snapshot step's `source_routing_step_id` points at
+  the template step it was minted from.
+
+  Idempotent: if the item already has a snapshot, the existing row
+  is updated in place (same `routings_item_snapshot_index`
+  constraint, same semantics as `update_routing/3` wholesale-replace).
+
+  `step_overrides` is an optional map keyed by the template step's
+  UUID. Each entry may override `operation_description`,
+  `setup_time_min`, `cycle_time_min`, `capacity`, `fixed_cost`,
+  `variable_cost` — NPD passes per-stage tweaks here. Other fields
+  (workstation_group, sort_order) are always copied from the
+  template.
+  """
+  def snapshot_from_template(%User{} = actor, template_uuid, item_uuid, step_overrides \\ %{})
+      when is_binary(template_uuid) and is_binary(item_uuid) do
+    with {:ok, template} <- fetch_template(actor, template_uuid),
+         {:ok, item} <- fetch_item_by_uuid(actor, item_uuid),
+         :ok <- ensure_bommable_item_type(item) do
+      do_snapshot_from_template(actor, template, item, step_overrides)
+    end
+  end
+
+  defp fetch_template(%User{company_id: company_id}, uuid) do
+    case Routing
+         |> where([r], r.company_id == ^company_id and r.uuid == ^uuid and is_nil(r.item_id))
+         |> preload(steps: [:workstation_group])
+         |> Repo.one() do
+      nil -> {:error, :template_not_found}
+      %Routing{} = t -> {:ok, t}
+    end
+  end
+
+  defp fetch_item_by_uuid(%User{company_id: company_id}, uuid) do
+    case Repo.get_by(Item, uuid: uuid, company_id: company_id) do
+      nil -> {:error, :item_not_found}
+      %Item{} = item -> {:ok, item}
+    end
+  end
+
+  defp do_snapshot_from_template(
+         %User{} = actor,
+         %Routing{} = template,
+         %Item{} = item,
+         step_overrides
+       ) do
+    overrides =
+      step_overrides
+      |> Map.new(fn {k, v} -> {to_string(k), stringify_keys(v || %{})} end)
+
+    steps_attrs =
+      Enum.map(template.steps, fn step ->
+        override = Map.get(overrides, step.uuid, %{})
+
+        %{
+          "workstation_group_id" => step.workstation_group_id,
+          "source_routing_step_id" => step.id,
+          "sort_order" => step.sort_order,
+          "operation_description" =>
+            Map.get(override, "operation_description", step.operation_description),
+          "setup_time_min" => Map.get(override, "setup_time_min", step.setup_time_min),
+          "cycle_time_min" => Map.get(override, "cycle_time_min", step.cycle_time_min),
+          "capacity" => Map.get(override, "capacity", step.capacity),
+          "fixed_cost" => Map.get(override, "fixed_cost", step.fixed_cost),
+          "variable_cost" => Map.get(override, "variable_cost", step.variable_cost)
+        }
+      end)
+
+    base_attrs = %{
+      "name" => template.name,
+      "notes" => template.notes,
+      "is_active" => template.is_active,
+      "other_fixed_cost" => template.other_fixed_cost,
+      "other_variable_cost" => template.other_variable_cost,
+      "other_variable_cost_basis" => template.other_variable_cost_basis,
+      "source_template_id" => template.id,
+      "steps" => steps_attrs
+    }
+
+    case find_item_snapshot(actor.company_id, item.id) do
+      nil ->
+        attrs = Map.merge(base_attrs, %{"item_id" => item.id})
+        create_routing(actor, attrs)
+
+      %Routing{} = existing ->
+        update_routing(actor, existing, base_attrs)
+    end
+  end
+
+  defp find_item_snapshot(company_id, item_id) do
+    Repo.one(
+      from r in Routing,
+        where: r.company_id == ^company_id and r.item_id == ^item_id
+    )
   end
 
   # ============================================================

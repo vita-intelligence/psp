@@ -179,6 +179,103 @@ defmodule Backend.Purchasing.VendorPrices do
     )
   end
 
+  @doc """
+  Paginated + searchable variant. Powers the vendor detail page's
+  "Price history" card for vendors with thousands of cached rows —
+  same shape + contract as the sibling approved-items +
+  purchase-terms endpoints.
+
+  `opts`:
+    * `:search` — case-insensitive match against `items.name`,
+      `items.external_sku`, `items.barcode`.
+    * `:limit` — defaults to 25, capped at 200.
+    * `:offset` — defaults to 0.
+
+  Returns `%{items: [...], total: integer, has_more: boolean}`.
+  """
+  def list_for_vendor_page(company_id, vendor_id, opts \\ [])
+      when is_integer(company_id) and is_integer(vendor_id) do
+    alias Backend.Items.Item
+
+    search = opts |> Keyword.get(:search) |> trim_nil()
+    limit = opts |> Keyword.get(:limit, 25) |> clamp_int(1, 200)
+    offset = opts |> Keyword.get(:offset, 0) |> max_int(0)
+
+    base =
+      from(p in VendorItemPrice,
+        join: i in Item,
+        on: i.id == p.item_id,
+        where:
+          p.company_id == ^company_id and p.vendor_id == ^vendor_id
+      )
+
+    filtered =
+      case search do
+        nil ->
+          base
+
+        term ->
+          needle = "%" <> Backend.ListQueries.escape_like(term) <> "%"
+
+          from([p, i] in base,
+            where:
+              ilike(i.name, ^needle) or
+                ilike(coalesce(i.external_sku, ""), ^needle) or
+                ilike(coalesce(i.barcode, ""), ^needle)
+          )
+      end
+
+    total = Repo.aggregate(filtered, :count, :id)
+
+    rows =
+      from([p, i] in filtered,
+        order_by: [desc: p.last_paid_at, desc: p.id],
+        limit: ^limit,
+        offset: ^offset,
+        select: p
+      )
+      |> Repo.all()
+      |> Repo.preload([:item, last_po_line: :purchase_order])
+
+    %{items: rows, total: total, has_more: offset + length(rows) < total}
+  end
+
+  defp trim_nil(nil), do: nil
+  defp trim_nil(""), do: nil
+
+  defp trim_nil(s) when is_binary(s) do
+    case String.trim(s) do
+      "" -> nil
+      t -> t
+    end
+  end
+
+  defp trim_nil(_), do: nil
+
+  defp clamp_int(n, _lo, hi) when is_integer(n) and n > hi, do: hi
+  defp clamp_int(n, lo, _hi) when is_integer(n) and n < lo, do: lo
+  defp clamp_int(n, _lo, _hi) when is_integer(n), do: n
+
+  defp clamp_int(raw, lo, hi) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, _} -> clamp_int(n, lo, hi)
+      _ -> lo
+    end
+  end
+
+  defp clamp_int(_, lo, _hi), do: lo
+
+  defp max_int(n, lo) when is_integer(n), do: if(n < lo, do: lo, else: n)
+
+  defp max_int(raw, lo) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, _} -> max_int(n, lo)
+      _ -> lo
+    end
+  end
+
+  defp max_int(_, lo), do: lo
+
   # ----- helpers ----------------------------------------------------
 
   defp recordable?(%PurchaseOrderLine{item_id: nil}), do: false

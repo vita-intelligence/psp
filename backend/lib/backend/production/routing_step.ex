@@ -51,6 +51,7 @@ defmodule Backend.Production.RoutingStep do
     belongs_to :company, Company
     belongs_to :routing, Routing
     belongs_to :workstation_group, WorkstationGroup
+    belongs_to :source_routing_step, __MODULE__, foreign_key: :source_routing_step_id
 
     has_many :worker_assignments, RoutingStepWorker,
       foreign_key: :routing_step_id,
@@ -67,6 +68,7 @@ defmodule Backend.Production.RoutingStep do
       :company_id,
       :routing_id,
       :workstation_group_id,
+      :source_routing_step_id,
       :sort_order,
       :operation_description,
       :setup_time_min,
@@ -93,6 +95,7 @@ defmodule Backend.Production.RoutingStep do
     |> assoc_constraint(:company)
     |> assoc_constraint(:routing)
     |> assoc_constraint(:workstation_group)
+    |> assoc_constraint(:source_routing_step)
     |> check_constraint(:capacity,
       name: :routing_steps_capacity_positive,
       message: "must be greater than zero"

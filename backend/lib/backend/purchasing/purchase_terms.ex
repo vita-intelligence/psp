@@ -45,6 +45,107 @@ defmodule Backend.Purchasing.PurchaseTerms do
   end
 
   @doc """
+  Paginated + searchable variant of `list_for_vendor/2`. Powers the
+  vendor detail page's Purchase-terms card for vendors with
+  hundreds / thousands of tier rows — a flat list hits the DOM
+  budget hard, and operators can't find a specific item in it.
+
+  Search matches the joined `items.name`, `items.external_sku`, and
+  `items.barcode`. Pagination is offset-based (same shape as the
+  approved-items page) so the FE can show "Showing N of M" + Load
+  more without juggling cursors.
+
+  `opts`:
+    * `:search` — case-insensitive match.
+    * `:limit` — defaults to 50, capped at 200.
+    * `:offset` — defaults to 0.
+
+  Returns `%{items: [...], total: integer, has_more: boolean}`.
+  """
+  def list_for_vendor_page(company_id, vendor_id, opts \\ [])
+      when is_integer(company_id) and is_integer(vendor_id) do
+    alias Backend.Items.Item
+
+    search = opts |> Keyword.get(:search) |> trim_nil()
+    limit = opts |> Keyword.get(:limit, 50) |> clamp_int(1, 200)
+    offset = opts |> Keyword.get(:offset, 0) |> max_int(0)
+
+    base =
+      from(t in PurchaseTerm,
+        join: i in Item,
+        on: i.id == t.item_id,
+        where:
+          t.company_id == ^company_id and t.vendor_id == ^vendor_id
+      )
+
+    filtered =
+      case search do
+        nil ->
+          base
+
+        term ->
+          needle = "%" <> Backend.ListQueries.escape_like(term) <> "%"
+
+          from([t, i] in base,
+            where:
+              ilike(i.name, ^needle) or
+                ilike(coalesce(i.external_sku, ""), ^needle) or
+                ilike(coalesce(i.barcode, ""), ^needle)
+          )
+      end
+
+    total = Repo.aggregate(filtered, :count, :id)
+
+    rows =
+      from([t, i] in filtered,
+        order_by: [asc: i.name, asc: t.min_quantity, asc: t.priority],
+        limit: ^limit,
+        offset: ^offset,
+        select: t
+      )
+      |> Repo.all()
+      |> Repo.preload(:item)
+
+    %{items: rows, total: total, has_more: offset + length(rows) < total}
+  end
+
+  defp trim_nil(nil), do: nil
+  defp trim_nil(""), do: nil
+
+  defp trim_nil(s) when is_binary(s) do
+    case String.trim(s) do
+      "" -> nil
+      t -> t
+    end
+  end
+
+  defp trim_nil(_), do: nil
+
+  defp clamp_int(n, _lo, hi) when is_integer(n) and n > hi, do: hi
+  defp clamp_int(n, lo, _hi) when is_integer(n) and n < lo, do: lo
+  defp clamp_int(n, _lo, _hi) when is_integer(n), do: n
+
+  defp clamp_int(raw, lo, hi) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, _} -> clamp_int(n, lo, hi)
+      _ -> lo
+    end
+  end
+
+  defp clamp_int(_, lo, _hi), do: lo
+
+  defp max_int(n, lo) when is_integer(n), do: if(n < lo, do: lo, else: n)
+
+  defp max_int(raw, lo) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, _} -> max_int(n, lo)
+      _ -> lo
+    end
+  end
+
+  defp max_int(_, lo), do: lo
+
+  @doc """
   Item detail page — every vendor quoting this item, ranked by
   priority (1 = primary). Vendor preloaded for the table row's
   Vendor column.
@@ -85,23 +186,134 @@ defmodule Backend.Purchasing.PurchaseTerms do
   cheapest primary term across every vendor quoting this item. Only
   reads currently-valid terms (skips ones outside their valid_from /
   valid_until window). Returns nil when there's no live term.
+
+  Optional `qty` arg selects the right **volume tier** — picks the
+  highest min_quantity tier whose floor ≤ qty per vendor, so bulk
+  buyers get the bulk price.
+
+  **Below the smallest tier floor** (e.g. qty = 0.03 kg when the
+  cheapest tier starts at 1 kg) — the per-kg rate the vendor
+  quotes at that smallest tier is still the right cost projection,
+  so we fall back to the lowest-min_quantity row rather than
+  returning nil. Cost calculators consume this to compute
+  `mg_per_pack × unit_cost / 1_000_000`, which works at any
+  mg scale.
+
+  Defaults to 1 (= base tier) for backward compat with callers
+  that don't yet pass qty.
   """
-  def item_default_cost(company_id, item_id)
+  def item_default_cost(company_id, item_id, qty \\ Decimal.new("1"))
+
+  def item_default_cost(company_id, item_id, qty)
       when is_integer(company_id) and is_integer(item_id) do
     today = Date.utc_today()
+    qty_decimal = to_decimal(qty)
 
-    Repo.one(
-      from(t in PurchaseTerm,
-        where:
-          t.company_id == ^company_id and
-            t.item_id == ^item_id and
-            (is_nil(t.valid_from) or t.valid_from <= ^today) and
-            (is_nil(t.valid_until) or t.valid_until >= ^today),
-        order_by: [asc: t.priority, asc: t.price],
-        limit: 1
+    # Try tier-matched first — row whose min_quantity ≤ qty.
+    tier_match =
+      Repo.one(
+        from(t in PurchaseTerm,
+          where:
+            t.company_id == ^company_id and
+              t.item_id == ^item_id and
+              t.min_quantity <= ^qty_decimal and
+              (is_nil(t.valid_from) or t.valid_from <= ^today) and
+              (is_nil(t.valid_until) or t.valid_until >= ^today),
+          order_by: [
+            asc: t.vendor_id,
+            desc: t.min_quantity
+          ],
+          distinct: [t.vendor_id]
+        )
+        |> subquery()
+        |> order_by([t], asc: t.priority, asc: t.price)
+        |> limit(1)
       )
-    )
+
+    case tier_match do
+      nil ->
+        # Sub-tier qty — e.g. project needs 0.03 kg of an item whose
+        # vendor only tiers at 1 kg+. Still use the smallest tier's
+        # per-unit rate so cost projections don't go blank.
+        Repo.one(
+          from(t in PurchaseTerm,
+            where:
+              t.company_id == ^company_id and
+                t.item_id == ^item_id and
+                (is_nil(t.valid_from) or t.valid_from <= ^today) and
+                (is_nil(t.valid_until) or t.valid_until >= ^today),
+            order_by: [asc: t.min_quantity, asc: t.priority, asc: t.price],
+            limit: 1
+          )
+        )
+
+      row ->
+        row
+    end
   end
+
+  @doc """
+  Pick the right tier for a single (company, vendor, item, qty). The
+  tier with the highest `min_quantity ≤ qty` wins; ties broken by
+  priority then price (cheaper first).
+  """
+  def effective_term_for(company_id, vendor_id, item_id, qty)
+      when is_integer(company_id) and is_integer(vendor_id) and
+             is_integer(item_id) do
+    today = Date.utc_today()
+    qty_decimal = to_decimal(qty)
+
+    tier_match =
+      Repo.one(
+        from(t in PurchaseTerm,
+          where:
+            t.company_id == ^company_id and
+              t.vendor_id == ^vendor_id and
+              t.item_id == ^item_id and
+              t.min_quantity <= ^qty_decimal and
+              (is_nil(t.valid_from) or t.valid_from <= ^today) and
+              (is_nil(t.valid_until) or t.valid_until >= ^today),
+          order_by: [desc: t.min_quantity, asc: t.priority, asc: t.price],
+          limit: 1
+        )
+      )
+
+    case tier_match do
+      nil ->
+        # Sub-tier qty fallback — same reasoning as
+        # `item_default_cost/3`; the smallest-tier per-unit rate
+        # is still the right projection when qty < all tier floors.
+        Repo.one(
+          from(t in PurchaseTerm,
+            where:
+              t.company_id == ^company_id and
+                t.vendor_id == ^vendor_id and
+                t.item_id == ^item_id and
+                (is_nil(t.valid_from) or t.valid_from <= ^today) and
+                (is_nil(t.valid_until) or t.valid_until >= ^today),
+            order_by: [asc: t.min_quantity, asc: t.priority, asc: t.price],
+            limit: 1
+          )
+        )
+
+      row ->
+        row
+    end
+  end
+
+  defp to_decimal(%Decimal{} = d), do: d
+
+  defp to_decimal(n) when is_integer(n) or is_float(n),
+    do: Decimal.new("#{n}")
+
+  defp to_decimal(s) when is_binary(s) do
+    case Decimal.parse(s) do
+      {d, _} -> d
+      :error -> Decimal.new("1")
+    end
+  end
+
+  defp to_decimal(_), do: Decimal.new("1")
 
   @doc """
   Bulk cost lookup for downstream consumers (vita-cff's builder cost
@@ -142,8 +354,11 @@ defmodule Backend.Purchasing.PurchaseTerms do
   # deeper than this returns `none` rather than churning the DB.
   @bom_rollup_max_depth 6
 
-  def suggest_costs_bulk(company_id, item_uuids)
-      when is_integer(company_id) and is_list(item_uuids) do
+  def suggest_costs_bulk(company_id, item_uuids, qty_per_item \\ %{})
+
+  def suggest_costs_bulk(company_id, item_uuids, qty_per_item)
+      when is_integer(company_id) and is_list(item_uuids) and
+             is_map(qty_per_item) do
     alias Backend.Items.Item
 
     trimmed_uuids =
@@ -173,8 +388,20 @@ defmodule Backend.Purchasing.PurchaseTerms do
 
       all_item_ids = Map.keys(items_by_id)
 
+      # Translate the uuid-keyed qty map (what callers conveniently
+      # pass over the wire) into an id-keyed map so the term lookup
+      # can key on `item_id`.
+      qty_by_item_id =
+        for item <- top_items,
+            qty = Map.get(qty_per_item, item.uuid),
+            not is_nil(qty),
+            into: %{} do
+          {item.id, to_decimal(qty)}
+        end
+
       last_paid_by_item_id = load_last_paid(company_id, all_item_ids)
-      primary_terms_by_item_id = load_primary_terms(company_id, all_item_ids)
+      primary_terms_by_item_id =
+        load_primary_terms(company_id, all_item_ids, qty_by_item_id)
 
       company = Backend.Companies.get!(company_id)
 
@@ -214,23 +441,33 @@ defmodule Backend.Purchasing.PurchaseTerms do
         on: v.id == p.vendor_id,
         order_by: [asc: p.item_id, desc: p.last_paid_at],
         distinct: [p.item_id],
-        select: {p.item_id, p.unit_price, p.currency_code, v.name}
+        select:
+          {p.item_id, p.unit_price, p.currency_code, v.name, p.last_paid_at}
       )
     )
-    |> Map.new(fn {item_id, price, ccy, vendor_name} ->
-      {item_id, %{unit_price: price, currency_code: ccy, vendor_name: vendor_name}}
+    |> Map.new(fn {item_id, price, ccy, vendor_name, last_paid_at} ->
+      {item_id,
+       %{
+         unit_price: price,
+         currency_code: ccy,
+         vendor_name: vendor_name,
+         last_paid_at: last_paid_at
+       }}
     end)
   end
 
   # Prefetch the primary term per item (vendor-agnostic — cheapest
-  # live term across all quoting vendors). N sequential Repo calls
+  # live term across all quoting vendors), tier-aware when the
+  # caller passed a qty for that item. N sequential Repo calls
   # here is dwarfed by the FE round-trips it saves.
-  defp load_primary_terms(_company_id, []), do: %{}
+  defp load_primary_terms(_company_id, [], _qty_by_item_id), do: %{}
 
-  defp load_primary_terms(company_id, item_ids) do
+  defp load_primary_terms(company_id, item_ids, qty_by_item_id) do
     item_ids
     |> Enum.map(fn item_id ->
-      case item_default_cost(company_id, item_id) do
+      qty = Map.get(qty_by_item_id, item_id, Decimal.new("1"))
+
+      case item_default_cost(company_id, item_id, qty) do
         nil -> {item_id, nil}
         term -> {item_id, Repo.preload(term, :vendor)}
       end
@@ -347,6 +584,41 @@ defmodule Backend.Purchasing.PurchaseTerms do
     )
   end
 
+  defp paid_cost(paid, item) do
+    %{
+      unit_cost: paid.unit_price,
+      currency_code: paid.currency_code,
+      source: "po_history",
+      vendor_name: paid.vendor_name,
+      uom_symbol: uom_symbol_of(item)
+    }
+  end
+
+  defp term_cost(term, item) do
+    %{
+      unit_cost: term.price,
+      currency_code: term.currency_code,
+      source: "purchase_term",
+      vendor_name: term.vendor && term.vendor.name,
+      uom_symbol: term.min_quantity_uom || uom_symbol_of(item)
+    }
+  end
+
+  # Is the purchase-term's last edit newer than the vendor's last
+  # paid PO? Nil `last_paid_at` falls through to "term wins" so a
+  # price cache that's missing a timestamp doesn't block the fresh
+  # negotiated baseline.
+  defp term_newer_than_paid?(%{updated_at: term_at}, %{last_paid_at: paid_at})
+       when not is_nil(term_at) and not is_nil(paid_at) do
+    case DateTime.compare(term_at, paid_at) do
+      :gt -> true
+      :eq -> true
+      :lt -> false
+    end
+  end
+
+  defp term_newer_than_paid?(_, _), do: true
+
   # Resolve one item's unit cost with memoisation + cycle guard.
   # Returns `{cost_struct, updated_memo}`. `cost_struct` is nil-safe
   # (`unit_cost: nil`, `source: "none"`) for unresolvable items.
@@ -370,28 +642,30 @@ defmodule Backend.Purchasing.PurchaseTerms do
       true ->
         item = Map.get(ctx.items, item_id)
 
+        paid = Map.get(ctx.last_paid, item_id)
+        term = Map.get(ctx.primary_terms, item_id)
+
         cost =
           cond do
             is_nil(item) ->
               nil_cost()
 
-            paid = Map.get(ctx.last_paid, item_id) ->
-              %{
-                unit_cost: paid.unit_price,
-                currency_code: paid.currency_code,
-                source: "po_history",
-                vendor_name: paid.vendor_name,
-                uom_symbol: uom_symbol_of(item)
-              }
+            # Both exist — pick whichever is more recent so a term the
+            # buyer just negotiated supersedes a stale PO, but a fresh
+            # PO still wins over an old quoted baseline. Tie breaks
+            # toward purchase_term (buyer's current intent).
+            not is_nil(paid) and not is_nil(term) ->
+              if term_newer_than_paid?(term, paid) do
+                term_cost(term, item)
+              else
+                paid_cost(paid, item)
+              end
 
-            term = Map.get(ctx.primary_terms, item_id) ->
-              %{
-                unit_cost: term.price,
-                currency_code: term.currency_code,
-                source: "purchase_term",
-                vendor_name: term.vendor && term.vendor.name,
-                uom_symbol: term.min_quantity_uom || uom_symbol_of(item)
-              }
+            not is_nil(paid) ->
+              paid_cost(paid, item)
+
+            not is_nil(term) ->
+              term_cost(term, item)
 
             item.item_type == "semi_finished" and depth < @bom_rollup_max_depth ->
               # Delegate to a helper that walks this item's BOM lines

@@ -46,6 +46,12 @@ defmodule Backend.Production.WorkstationGroup do
     field :hourly_rate_enabled, :boolean, default: false
     field :hourly_rate, :decimal
 
+    # Fallback labour wage used only when the kiosk-session average
+    # is absent (new group, no sessions yet). Reality from HR always
+    # wins when it exists; this field is strictly a projection seed
+    # for cost calculations on fresh workstation groups.
+    field :default_labour_rate_hourly, :decimal
+
     field :custom_working_hours, :boolean, default: false
     field :working_hours, :map, default: %{}
 
@@ -71,6 +77,7 @@ defmodule Backend.Production.WorkstationGroup do
   @cast_fields ~w(
     company_id name notes kind
     hourly_rate_enabled hourly_rate
+    default_labour_rate_hourly
     custom_working_hours working_hours
     custom_holidays holidays
     color is_active
@@ -89,6 +96,10 @@ defmodule Backend.Production.WorkstationGroup do
       message: "must be active_processing or passive_processing"
     )
     |> validate_hourly_rate()
+    |> validate_number(:default_labour_rate_hourly,
+      greater_than_or_equal_to: 0,
+      message: "must be zero or greater"
+    )
     |> trim_name()
     |> clean_color()
     |> assoc_constraint(:company)

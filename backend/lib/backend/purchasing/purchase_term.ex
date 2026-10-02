@@ -5,10 +5,15 @@ defmodule Backend.Purchasing.PurchaseTerm do
   is no PO history yet. See `Backend.Purchasing.VendorItemPrice` for
   the sibling model that caches actually-paid PO prices.
 
-  One row per (company, vendor, item). Ranked by `priority` (1 =
-  primary vendor for this item). The primary term's price is what
-  BOM cost roll-ups + spec sheets fall back to when no PO history
-  exists on that pair.
+  **Volume tiers**: one row per (company, vendor, item,
+  min_quantity). The row with the highest ``min_quantity ≤ ordered
+  qty`` wins — see ``Backend.Purchasing.PurchaseTerms.
+  effective_term_for/4``. Legacy "no tier" terms live as the single
+  row with ``min_quantity = 1`` (base tier).
+
+  Ranked by `priority` (1 = primary vendor for this item). The
+  primary term's price is what BOM cost roll-ups + spec sheets fall
+  back to when no PO history exists on that pair.
 
   A term cannot be saved unless a matching `vendor_approved_items`
   row exists — enforced in the context service, not the schema, so
@@ -33,7 +38,7 @@ defmodule Backend.Purchasing.PurchaseTerm do
     field :price, :decimal
     field :currency_code, :string
 
-    field :min_quantity, :decimal
+    field :min_quantity, :decimal, default: Decimal.new("1")
     field :min_quantity_uom, :string
 
     field :priority, :integer, default: 1
@@ -70,7 +75,7 @@ defmodule Backend.Purchasing.PurchaseTerm do
     updated_by_id
   )a
 
-  @required ~w(company_id vendor_id item_id price currency_code)a
+  @required ~w(company_id vendor_id item_id price currency_code min_quantity)a
 
   def changeset(row, attrs) do
     row
@@ -88,9 +93,9 @@ defmodule Backend.Purchasing.PurchaseTerm do
     |> validate_number(:priority, greater_than: 0)
     |> validate_date_range()
     |> unique_constraint(
-      [:company_id, :vendor_id, :item_id],
-      name: :vendor_item_purchase_terms_unique_index,
-      message: "a purchase term already exists for this vendor + item"
+      [:company_id, :vendor_id, :item_id, :min_quantity],
+      name: :vendor_item_purchase_terms_tier_unique_index,
+      message: "a tier at this min_quantity already exists for this vendor + item"
     )
   end
 

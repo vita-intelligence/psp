@@ -84,12 +84,24 @@ defmodule BackendWeb.VendorController do
   currency) for the given vendor — read-only projection of received
   PO lines, ordered by most-recent paid date.
   """
-  def price_history(conn, %{"vendor_id" => uuid}) do
+  def price_history(conn, %{"vendor_id" => uuid} = params) do
     actor = conn.assigns.current_user
 
     with %{} = vendor <- Vendors.get_for_company(actor.company_id, uuid) do
-      rows = VendorPrices.list_for_vendor(actor.company_id, vendor.id)
-      json(conn, %{items: Enum.map(rows, &Payloads.vendor_item_price/1)})
+      page =
+        VendorPrices.list_for_vendor_page(
+          actor.company_id,
+          vendor.id,
+          search: params["search"],
+          limit: params["limit"] || "25",
+          offset: params["offset"] || "0"
+        )
+
+      json(conn, %{
+        items: Enum.map(page.items, &Payloads.vendor_item_price/1),
+        total: page.total,
+        has_more: page.has_more
+      })
     else
       _ -> {:error, :not_found}
     end
@@ -333,6 +345,30 @@ defmodule BackendWeb.VendorController do
   end
 
   # ----- approved-item edges ---------------------------------------
+
+  def list_approved_items(conn, %{"vendor_id" => uuid} = params) do
+    actor = conn.assigns.current_user
+
+    case Vendors.get_for_company(actor.company_id, uuid) do
+      nil ->
+        {:error, :not_found}
+
+      vendor ->
+        page =
+          Vendors.list_approved_items_page(
+            vendor,
+            search: params["search"],
+            limit: params["limit"] || "50",
+            offset: params["offset"] || "0"
+          )
+
+        json(conn, %{
+          items: Enum.map(page.items, &Payloads.vendor_approved_item/1),
+          total: page.total,
+          has_more: page.has_more
+        })
+    end
+  end
 
   def add_approved_item(conn, %{"vendor_id" => uuid, "item_id" => raw_item_id} = params) do
     actor = conn.assigns.current_user

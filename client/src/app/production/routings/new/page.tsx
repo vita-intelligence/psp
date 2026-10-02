@@ -10,7 +10,7 @@ import { PresenceMount } from "@/components/realtime/presence-mount";
 import { ProductionSubnav } from "../../production-subnav";
 import { RoutingForm } from "../routing-form";
 
-export const metadata = { title: "New routing · Production · PSP" };
+export const metadata = { title: "New routing template · Production · PSP" };
 
 export default async function NewRoutingPage() {
   const user = await requireUser();
@@ -37,7 +37,7 @@ export default async function NewRoutingPage() {
             >
               <Link href="/production/routings">
                 <ChevronLeft className="mr-1 size-4" />
-                Back to routings
+                Back to templates
               </Link>
             </Button>
           </div>
@@ -45,8 +45,13 @@ export default async function NewRoutingPage() {
           <header className="space-y-1.5">
             <h1 className="flex items-center gap-3 text-2xl font-semibold tracking-tight sm:text-3xl">
               <Route className="size-6 text-brand" />
-              New routing
+              New routing template
             </h1>
+            <p className="text-sm text-muted-foreground">
+              Define an ordered sequence of operations once. NPD's
+              formulation builder picks this template and snapshots a
+              copy onto each product that uses it.
+            </p>
           </header>
 
           <RoutingForm

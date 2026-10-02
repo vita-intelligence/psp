@@ -108,7 +108,10 @@ interface FormState {
 
 interface RoutingFormProps {
   routing: Routing | null;
-  /** When creating from an item page, pre-fill the output item. */
+  /** When creating from an item page, pre-fill the output item.
+   *  When creating from `/production/routings/new` this is null and
+   *  the form switches to **template mode** (no output item, no BOM
+   *  — the routing is a reusable template NPD picks from). */
   outputItem: Item | null;
   /** Optional pre-fill of the connected BOM. */
   initialBom: BOMSummary | null;
@@ -118,6 +121,17 @@ interface RoutingFormProps {
   /** Fired on successful save so the EditModeToggle wrapper flips
    *  the page back to view mode. */
   onSavedSuccess?: () => void;
+}
+
+/** A routing is a template (not pinned to an item) when:
+ *  - we're editing an existing row with `is_template = true`, OR
+ *  - we're creating fresh and no outputItem was pre-selected. */
+function isTemplateMode(
+  routing: Routing | null,
+  outputItem: Item | null,
+): boolean {
+  if (routing) return routing.is_template;
+  return !outputItem;
 }
 
 function newId(): string {
@@ -234,6 +248,8 @@ export function RoutingForm({
   onSavedSuccess,
 }: RoutingFormProps) {
   const router = useRouter();
+  const isTemplate = isTemplateMode(routing, outputItem);
+  const isSnapshot = !!(routing && !routing.is_template);
   const resource = routing ? `routing:${routing.uuid}` : "routing:new";
   useFormPresenceBeacon(resource);
 
@@ -462,11 +478,11 @@ export function RoutingForm({
     setFieldErrors({});
     setActionError(null);
 
-    if (!state.output_item) {
+    if (!isTemplate && !state.output_item) {
       setFieldErrors({ item_id: ["Pick an output item."] });
       return;
     }
-    if (state.connect_bom && !state.bom) {
+    if (!isTemplate && state.connect_bom && !state.bom) {
       setFieldErrors({ bom_id: ["Pick a BOM or untick \"Connect BOM\"."] });
       return;
     }
@@ -480,8 +496,13 @@ export function RoutingForm({
     }
 
     const payload: RoutingUpsertInput = {
-      item_id: state.output_item.id,
-      bom_id: state.connect_bom && state.bom ? state.bom.id : null,
+      item_id: isTemplate ? undefined : state.output_item!.id,
+      bom_id:
+        isTemplate
+          ? undefined
+          : state.connect_bom && state.bom
+            ? state.bom.id
+            : null,
       name: state.name.trim(),
       notes: state.notes.trim() || null,
       is_active: state.is_active,
@@ -606,34 +627,44 @@ export function RoutingForm({
             <div className="space-y-4">
               <SectionTitle>Header</SectionTitle>
 
-              <div className="grid gap-2 sm:grid-cols-[180px_minmax(0,1fr)] sm:gap-4">
-                <Label className="pt-2.5 text-sm font-medium">
-                  Output item <span className="text-destructive">*</span>
-                </Label>
-                <div className="space-y-1.5">
-                  <SearchPicker<ItemOption>
-                    value={state.output_item}
-                    onChange={(opt) => {
-                      setField("output_item", opt);
-                      // Different item → clear stale BOM ref.
-                      if (state.bom && opt && state.bom.itemId !== opt.id) {
-                        setField("bom", null);
-                      }
-                    }}
-                    fetcher={searchItems}
-                    placeholder="Search items by name or code…"
-                    disabled={!canEdit || !!routing}
-                    onFocus={() => focusField("item_id")}
-                    onBlur={() => blurField("item_id")}
-                  />
-                  {routing && (
-                    <p className="text-[11px] text-muted-foreground">
-                      Item is locked on existing routings.
-                    </p>
-                  )}
-                  <FieldError messages={fieldErrors.item_id} />
+              {isTemplate ? (
+                <div className="rounded-md border border-dashed border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">Template.</span>{" "}
+                  Reusable across any item — NPD picks this template from the
+                  formulation builder and snapshots a copy onto the item at sync
+                  time.
                 </div>
-              </div>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-[180px_minmax(0,1fr)] sm:gap-4">
+                  <Label className="pt-2.5 text-sm font-medium">
+                    Output item <span className="text-destructive">*</span>
+                  </Label>
+                  <div className="space-y-1.5">
+                    <SearchPicker<ItemOption>
+                      value={state.output_item}
+                      onChange={(opt) => {
+                        setField("output_item", opt);
+                        if (state.bom && opt && state.bom.itemId !== opt.id) {
+                          setField("bom", null);
+                        }
+                      }}
+                      fetcher={searchItems}
+                      placeholder="Search items by name or code…"
+                      disabled={!canEdit || !!routing}
+                      onFocus={() => focusField("item_id")}
+                      onBlur={() => blurField("item_id")}
+                    />
+                    {routing && (
+                      <p className="text-[11px] text-muted-foreground">
+                        {isSnapshot
+                          ? "Snapshot — item is locked (minted from a template on sync)."
+                          : "Item is locked on existing routings."}
+                      </p>
+                    )}
+                    <FieldError messages={fieldErrors.item_id} />
+                  </div>
+                </div>
+              )}
 
               <div className="grid gap-2 sm:grid-cols-[180px_minmax(0,1fr)] sm:gap-4">
                 <Label htmlFor="name" className="pt-2.5 text-sm font-medium">
@@ -665,43 +696,45 @@ export function RoutingForm({
                 </div>
               </div>
 
-              <div className="grid gap-2 sm:grid-cols-[180px_minmax(0,1fr)] sm:gap-4">
-                <Label className="pt-1 text-sm font-medium">
-                  Connected BOM
-                </Label>
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id="connect_bom"
-                      checked={state.connect_bom}
-                      onCheckedChange={(v) => {
-                        const next = v === true;
-                        setField("connect_bom", next);
-                        if (!next) setField("bom", null);
-                      }}
-                      disabled={!state.output_item}
-                    />
-                    <Label
-                      htmlFor="connect_bom"
-                      className="cursor-pointer text-sm text-muted-foreground"
-                    >
-                      Tie this routing to a specific BOM
-                    </Label>
-                  </div>
-                  {state.connect_bom && (
-                    <>
-                      <SearchPicker<BOMOption>
-                        value={state.bom}
-                        onChange={(opt) => setField("bom", opt)}
-                        fetcher={searchBoms}
-                        placeholder="Pick a BOM for this item…"
-                        disabled={!canEdit || !state.output_item}
+              {!isTemplate && (
+                <div className="grid gap-2 sm:grid-cols-[180px_minmax(0,1fr)] sm:gap-4">
+                  <Label className="pt-1 text-sm font-medium">
+                    Connected BOM
+                  </Label>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="connect_bom"
+                        checked={state.connect_bom}
+                        onCheckedChange={(v) => {
+                          const next = v === true;
+                          setField("connect_bom", next);
+                          if (!next) setField("bom", null);
+                        }}
+                        disabled={!state.output_item}
                       />
-                      <FieldError messages={fieldErrors.bom_id} />
-                    </>
-                  )}
+                      <Label
+                        htmlFor="connect_bom"
+                        className="cursor-pointer text-sm text-muted-foreground"
+                      >
+                        Tie this routing to a specific BOM
+                      </Label>
+                    </div>
+                    {state.connect_bom && (
+                      <>
+                        <SearchPicker<BOMOption>
+                          value={state.bom}
+                          onChange={(opt) => setField("bom", opt)}
+                          fetcher={searchBoms}
+                          placeholder="Pick a BOM for this item…"
+                          disabled={!canEdit || !state.output_item}
+                        />
+                        <FieldError messages={fieldErrors.bom_id} />
+                      </>
+                    )}
+                  </div>
                 </div>
-              </div>
+              )}
 
               <div className="grid gap-2 sm:grid-cols-[180px_minmax(0,1fr)] sm:gap-4">
                 <Label htmlFor="notes" className="pt-2.5 text-sm font-medium">
@@ -749,6 +782,20 @@ export function RoutingForm({
                   </Button>
                 )}
               </div>
+              <p className="rounded-md border border-dashed border-border/60 bg-muted/40 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+                <strong className="text-foreground">Costs on a step scale differently.</strong>{" "}
+                <strong>Setup overhead</strong> = flat per batch run
+                (consumables, QC check) — amortises as qty grows.{" "}
+                <strong>Per-unit overhead</strong> = money per unit produced —
+                scales with qty.{" "}
+                <strong>Hourly costs</strong> (machine + operator wage) are
+                NOT set here — they live on the workstation group:{" "}
+                <em>"Charging a machine cost per hour"</em> for the machine
+                side, and <em>"Default operator wage (fallback)"</em> for
+                wages when no kiosk sessions exist yet. Real HR session wages
+                override the fallback automatically once the group has
+                history.
+              </p>
               <FieldError messages={fieldErrors.steps} />
 
               <div className="overflow-x-auto">
@@ -758,11 +805,36 @@ export function RoutingForm({
                       <th className="px-2 py-1.5 text-left w-8">#</th>
                       <th className="px-2 py-1.5 text-left">Workstation group</th>
                       <th className="px-2 py-1.5 text-left">Operation</th>
-                      <th className="px-2 py-1.5 text-right">Setup min</th>
-                      <th className="px-2 py-1.5 text-right">Cycle min</th>
-                      <th className="px-2 py-1.5 text-right">Fixed cost</th>
-                      <th className="px-2 py-1.5 text-right">Var cost</th>
-                      <th className="px-2 py-1.5 text-right">Capacity</th>
+                      <th
+                        className="px-2 py-1.5 text-right"
+                        title="Minutes to prep the station once per batch run."
+                      >
+                        Setup min
+                      </th>
+                      <th
+                        className="px-2 py-1.5 text-right"
+                        title="Minutes to run one cycle. Qty divided by capacity gives you the number of cycles."
+                      >
+                        Cycle min
+                      </th>
+                      <th
+                        className="px-2 py-1.5 text-right"
+                        title="Flat money per batch run (consumables, QC check, etc.). Doesn't scale with qty — amortises as qty grows."
+                      >
+                        Setup overhead
+                      </th>
+                      <th
+                        className="px-2 py-1.5 text-right"
+                        title="Money per unit produced. Scales linearly with qty."
+                      >
+                        Per-unit cost
+                      </th>
+                      <th
+                        className="px-2 py-1.5 text-right"
+                        title="Units produced per cycle. Qty / capacity = number of cycles the step runs."
+                      >
+                        Capacity
+                      </th>
                       <th className="px-2 py-1.5 text-left">Workers</th>
                       <th className="px-2 py-1.5 w-8" />
                     </tr>
@@ -1031,7 +1103,8 @@ function StepRow({
           value={step.fixed_cost}
           onChange={(e) => onPatch({ fixed_cost: e.target.value })}
           inputMode="decimal"
-          placeholder="0"
+          placeholder="per batch"
+          title="Flat money per batch run (consumables, QC, etc.). Doesn't scale with qty."
           className="h-9 text-right font-mono text-xs"
           disabled={!canEdit}
         />
@@ -1041,7 +1114,8 @@ function StepRow({
           value={step.variable_cost}
           onChange={(e) => onPatch({ variable_cost: e.target.value })}
           inputMode="decimal"
-          placeholder="0"
+          placeholder="per unit"
+          title="Money per unit produced. Scales linearly with qty."
           className="h-9 text-right font-mono text-xs"
           disabled={!canEdit}
         />

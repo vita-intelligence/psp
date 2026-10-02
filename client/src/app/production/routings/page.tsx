@@ -19,7 +19,7 @@ export default async function ProductionRoutingsPage() {
     redirect("/settings/profile");
   }
 
-  const initialPage = await listRoutingsPage();
+  const initialPage = await listRoutingsPage({ query: "scope=template" });
   const canCreate = hasPermission(user, "production.routing_create");
 
   return (
@@ -32,14 +32,14 @@ export default async function ProductionRoutingsPage() {
         <div className="mx-auto w-full space-y-6">
           <PageHeader
             icon={Route}
-            title="Routings"
-            description="Ordered operations against workstation groups that turn a BOM into a finished item. Drives MO planning + costing."
+            title="Routing templates"
+            description="Reusable operation sequences. NPD's formulation builder picks from this list; applying one snapshots the chosen template onto the item's routing at sync time."
             actions={
               canCreate && (
                 <Button asChild size="sm">
                   <Link href="/production/routings/new">
                     <Plus className="mr-1.5 size-4" />
-                    Create routing
+                    New template
                   </Link>
                 </Button>
               )

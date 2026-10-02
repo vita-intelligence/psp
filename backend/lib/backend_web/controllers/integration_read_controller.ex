@@ -1263,11 +1263,29 @@ defmodule BackendWeb.IntegrationReadController do
   Missing / archived uuids silently drop out of the response so
   the caller can diff input vs. returned to spot dead references.
   """
-  def suggest_costs(conn, %{"item_uuids" => uuids}) when is_list(uuids) do
+  def suggest_costs(conn, %{"item_uuids" => uuids} = params) when is_list(uuids) do
     company_id = conn.assigns.current_company_id
 
+    # Optional per-item ordered-qty map lets the caller pull
+    # tier-aware vendor prices — ``NPD's proposal "savings at
+    # scale" panel passes a qty per raw-material item at each
+    # breakpoint it renders. Missing map = qty 1 (base tier),
+    # backward-compatible with callers that haven't been updated.
+    qty_per_item =
+      case Map.get(params, "qty_per_item") do
+        m when is_map(m) ->
+          Map.new(m, fn {uuid, qty} -> {to_string(uuid), qty} end)
+
+        _ ->
+          %{}
+      end
+
     rows =
-      Backend.Purchasing.PurchaseTerms.suggest_costs_bulk(company_id, uuids)
+      Backend.Purchasing.PurchaseTerms.suggest_costs_bulk(
+        company_id,
+        uuids,
+        qty_per_item
+      )
 
     json(conn, %{
       items:

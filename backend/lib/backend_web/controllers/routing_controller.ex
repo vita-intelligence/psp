@@ -32,6 +32,7 @@ defmodule BackendWeb.RoutingController do
         sort: parse_sort(params["sort"]),
         search: params["search"],
         column_filter: params["column_filter"],
+        scope: parse_scope(params["scope"]),
         item_id: params["item_id"],
         bom_id: params["bom_id"],
         is_active: params["is_active"]
@@ -144,6 +145,10 @@ defmodule BackendWeb.RoutingController do
   end
 
   # ----- helpers ---------------------------------------------------
+
+  defp parse_scope("template"), do: :template
+  defp parse_scope("snapshot"), do: :snapshot
+  defp parse_scope(_), do: nil
 
   defp parse_sort(nil), do: nil
   defp parse_sort(""), do: nil

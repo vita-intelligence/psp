@@ -517,6 +517,11 @@ defmodule BackendWeb.Router do
 
       # Per-item approved-supplier edges. Adding a row is the gate
       # that lets a vendor appear on PO lines for the given item.
+      # The GET variant is paginated + searchable so the vendor
+      # detail card scales to catalogs with thousands of approved
+      # items — the detail-payload preload is kept only as a seed
+      # for the first page.
+      get "/approved-items", VendorController, :list_approved_items
       post "/approved-items", VendorController, :add_approved_item
       delete "/approved-items/:id", VendorController, :remove_approved_item
 
@@ -2243,6 +2248,13 @@ defmodule BackendWeb.Router do
     # replaces steps. NPD sends one routing per stage after pushing
     # that stage's BOM. Requires ``routing:write``.
     put "/items/:uuid/routing", IntegrationRoutingController, :upsert
+
+    # Read-side: list PSP's routing templates (routings with
+    # ``item_id IS NULL``) so NPD can show them in the formulation
+    # builder's "stage template" picker. Requires ``routing:read``.
+    get "/routing-templates",
+        IntegrationRoutingController,
+        :list_templates
 
     # Push a photo or a compliance file onto an existing catalog Item.
     # Multipart upload (`file` part + optional `kind` for files). NPD

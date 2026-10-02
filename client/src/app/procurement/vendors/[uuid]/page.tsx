@@ -149,7 +149,7 @@ export default async function VendorDetailPage({
 
           <VendorCertificatesCard vendor={vendor} canEdit={canEdit} />
 
-          <VendorPriceHistoryCard rows={priceHistory} />
+          <VendorPriceHistoryCard vendor={vendor} rows={priceHistory} />
 
           <AuditMetaSection
             inserted_at={vendor.inserted_at}

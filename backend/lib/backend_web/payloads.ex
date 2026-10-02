@@ -2134,6 +2134,8 @@ defmodule BackendWeb.Payloads do
       kind: g.kind,
       hourly_rate_enabled: g.hourly_rate_enabled,
       hourly_rate: decimal_to_string(g.hourly_rate),
+      default_labour_rate_hourly:
+        decimal_to_string(g.default_labour_rate_hourly),
       custom_working_hours: g.custom_working_hours,
       working_hours: g.working_hours || %{},
       custom_holidays: g.custom_holidays,
@@ -2395,6 +2397,9 @@ defmodule BackendWeb.Payloads do
       item: maybe_item_summary(r.item),
       bom_id: r.bom_id,
       bom: bom_summary(r.bom),
+      is_template: is_nil(r.item_id),
+      source_template_id: r.source_template_id,
+      source_template: routing_source_template(r),
       other_fixed_cost: decimal_to_string(r.other_fixed_cost),
       other_variable_cost: decimal_to_string(r.other_variable_cost),
       other_variable_cost_basis: decimal_to_string(r.other_variable_cost_basis),
@@ -2408,6 +2413,11 @@ defmodule BackendWeb.Payloads do
 
   def routing(_), do: nil
 
+  defp routing_source_template(%{source_template: %Backend.Production.Routing{} = t}),
+    do: %{id: t.id, uuid: t.uuid, name: t.name}
+
+  defp routing_source_template(_), do: nil
+
   @doc "Slim routing row for the ledger."
   def routing_summary(%Backend.Production.Routing{} = r) do
     %{
@@ -2416,8 +2426,10 @@ defmodule BackendWeb.Payloads do
       code: render_code(r, "routing"),
       name: r.name,
       is_active: r.is_active,
+      is_template: is_nil(r.item_id),
       item: maybe_item_summary(r.item),
       bom: bom_summary(r.bom),
+      source_template: routing_source_template(r),
       created_by: actor(r, :created_by),
       updated_by: actor(r, :updated_by),
       inserted_at: r.inserted_at,
@@ -2440,6 +2452,7 @@ defmodule BackendWeb.Payloads do
       capacity: decimal_to_string(s.capacity),
       workstation_group_id: s.workstation_group_id,
       workstation_group: workstation_group_summary(s.workstation_group),
+      source_routing_step_id: s.source_routing_step_id,
       workers: routing_step_workers(s)
     }
   end

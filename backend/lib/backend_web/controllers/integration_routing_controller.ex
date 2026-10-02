@@ -52,6 +52,94 @@ defmodule BackendWeb.IntegrationRoutingController do
   alias Backend.Repo
 
   plug :require_integration_scope, "routing:write" when action == :upsert
+  plug :require_integration_scope, "routing:read" when action == :list_templates
+
+  @doc """
+  List template routings (`item_id IS NULL`) available to NPD's
+  formulation builder stage picker. Returns the full step shape per
+  template so NPD can hydrate stages one-per-step without a second
+  round-trip.
+
+      {"templates": [
+        {
+          "uuid": "...",
+          "name": "Capsule — standard",
+          "notes": "...",
+          "is_active": true,
+          "steps": [
+            {
+              "uuid": "...",
+              "sort_order": 0,
+              "operation_description": "Blend",
+              "setup_time_min": "5",
+              "cycle_time_min": "45",
+              "capacity": "1",
+              "fixed_cost": "0",
+              "variable_cost": "0",
+              "workstation_group_uuid": "...",
+              "workstation_group_name": "Powder Blender",
+              "workstation_group_color": "#aab7f9"
+            }, ...
+          ]
+        }, ...
+      ]}
+  """
+  def list_templates(conn, _params) do
+    company_id = conn.assigns.current_company_id
+
+    templates =
+      company_id
+      |> Production.list_routing_templates()
+      |> Enum.filter(& &1.is_active)
+      |> Enum.map(&template_payload/1)
+
+    json(conn, %{templates: templates})
+  end
+
+  defp template_payload(%Routing{} = r) do
+    %{
+      uuid: r.uuid,
+      name: r.name,
+      notes: r.notes,
+      is_active: r.is_active,
+      other_fixed_cost: decimal_str(r.other_fixed_cost),
+      other_variable_cost: decimal_str(r.other_variable_cost),
+      other_variable_cost_basis: decimal_str(r.other_variable_cost_basis),
+      steps: Enum.map(r.steps, &template_step_payload/1)
+    }
+  end
+
+  defp template_step_payload(step) do
+    %{
+      uuid: step.uuid,
+      sort_order: step.sort_order,
+      operation_description: step.operation_description,
+      setup_time_min: decimal_str(step.setup_time_min),
+      cycle_time_min: decimal_str(step.cycle_time_min),
+      capacity: decimal_str(step.capacity),
+      fixed_cost: decimal_str(step.fixed_cost),
+      variable_cost: decimal_str(step.variable_cost),
+      workstation_group_uuid:
+        case step.workstation_group do
+          %{uuid: u} -> u
+          _ -> nil
+        end,
+      workstation_group_name:
+        case step.workstation_group do
+          %{name: n} -> n
+          _ -> nil
+        end,
+      workstation_group_color:
+        case step.workstation_group do
+          %{color: c} -> c
+          _ -> nil
+        end
+    }
+  end
+
+  defp decimal_str(nil), do: nil
+  defp decimal_str(%Decimal{} = d), do: Decimal.to_string(d, :normal)
+  defp decimal_str(other), do: to_string(other)
 
   def upsert(conn, %{"uuid" => item_uuid} = params) do
     company_id = conn.assigns.current_company_id
@@ -60,17 +148,17 @@ defmodule BackendWeb.IntegrationRoutingController do
     with %Item{} = item <- fetch_item(company_id, item_uuid),
          :ok <- ensure_bommable(item),
          %User{} = actor <- fetch_actor(token),
+         {:ok, source_template_id} <-
+           resolve_source_template(company_id, params["source_template_uuid"]),
          {:ok, resolved_steps} <- translate_steps(company_id, params["steps"]) do
       name = normalise_name(params["name"], item)
       notes = params["notes"]
-      # Routing-header overhead — fixed + variable costs that
-      # aren't tied to a specific step. Optional; nil pulls through
-      # to the changeset as "leave existing value alone" on update
-      # (the ``run_upsert`` path merges into the existing attrs).
+
       overhead = %{
         "other_fixed_cost" => params["other_fixed_cost"],
         "other_variable_cost" => params["other_variable_cost"],
-        "other_variable_cost_basis" => params["other_variable_cost_basis"]
+        "other_variable_cost_basis" => params["other_variable_cost_basis"],
+        "source_template_id" => source_template_id
       }
 
       run_upsert(conn, actor, item, name, notes, resolved_steps, overhead)
@@ -79,6 +167,25 @@ defmodule BackendWeb.IntegrationRoutingController do
       nil -> unprocessable(conn, "item_not_found", item_uuid)
     end
   end
+
+  defp resolve_source_template(_company_id, nil), do: {:ok, nil}
+  defp resolve_source_template(_company_id, ""), do: {:ok, nil}
+
+  defp resolve_source_template(company_id, uuid) when is_binary(uuid) do
+    case Repo.one(
+           from r in Routing,
+             where:
+               r.company_id == ^company_id and r.uuid == ^uuid and
+                 is_nil(r.item_id),
+             select: r.id
+         ) do
+      nil -> {:error, "source_template_not_found", uuid}
+      id -> {:ok, id}
+    end
+  end
+
+  defp resolve_source_template(_company_id, other),
+    do: {:error, "source_template_uuid_invalid", inspect(other)}
 
   # ---- internals ----
 
@@ -208,11 +315,14 @@ defmodule BackendWeb.IntegrationRoutingController do
     with {:ok, group_uuid} <-
            fetch_binary(step, "workstation_group_uuid", index, "missing workstation_group_uuid"),
          {:ok, group_id} <- resolve_group_id(company_id, group_uuid, index),
+         {:ok, source_step_id} <-
+           resolve_source_step_id(company_id, step["source_routing_step_uuid"], index),
          {:ok, worker_ids} <-
            resolve_worker_ids(company_id, step["default_worker_uuids"], index) do
       attrs =
         %{
           "workstation_group_id" => group_id,
+          "source_routing_step_id" => source_step_id,
           "sort_order" => step["sort_order"] || index,
           "operation_description" => step["operation_description"],
           "setup_time_min" => step["setup_time_min"],
@@ -234,6 +344,29 @@ defmodule BackendWeb.IntegrationRoutingController do
       {:ok, attrs}
     end
   end
+
+  defp resolve_source_step_id(_company_id, nil, _index), do: {:ok, nil}
+  defp resolve_source_step_id(_company_id, "", _index), do: {:ok, nil}
+
+  defp resolve_source_step_id(company_id, uuid, index) when is_binary(uuid) do
+    case Repo.one(
+           from s in Backend.Production.RoutingStep,
+             join: r in assoc(s, :routing),
+             where:
+               s.company_id == ^company_id and s.uuid == ^uuid and
+                 is_nil(r.item_id),
+             select: s.id
+         ) do
+      # Silently drop unknown template-step UUIDs — same cross-repo
+      # drift tolerance ``resolve_worker_ids`` uses. The snapshot
+      # still gets written, just without the provenance link.
+      nil -> {:ok, nil}
+      id -> {:ok, id}
+    end
+  end
+
+  defp resolve_source_step_id(_company_id, _other, index),
+    do: {:error, "step[#{index}]: source_routing_step_uuid must be a string"}
 
   defp translate_step(_company_id, _step, index),
     do: {:error, "step[#{index}]: not an object"}

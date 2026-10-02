@@ -50,6 +50,9 @@ async function fetchPage(params: {
 }): Promise<PageResult<RoutingSummary>> {
   const qs = new URLSearchParams();
   qs.set("limit", String(params.limit));
+  // The /production/routings page lists templates (item_id IS NULL)
+  // only — per-item snapshots live on the item detail page.
+  qs.set("scope", "template");
   if (params.cursor) qs.set("cursor", params.cursor);
   if (params.sort)
     qs.set("sort", `${params.sort.field}:${params.sort.direction}`);
@@ -115,47 +118,6 @@ export function RoutingsLedger({ initialPage }: Props) {
             {!r.is_active && <Badge tone="muted">Archived</Badge>}
           </div>
         ),
-      },
-      {
-        id: "item",
-        header: "Output item",
-        widthClassName: "min-w-[14rem]",
-        filterField: "item",
-        filterKind: "text",
-        filterPlaceholder: "Item name or SKU…",
-        group: "Identity",
-        description: "Item this routing produces. Filter by name or SKU.",
-        cell: (r) =>
-          r.item ? (
-            <div className="min-w-0 space-y-0.5">
-              <p className="truncate text-sm">{r.item.name}</p>
-              {r.item.code && (
-                <p className="font-mono text-[10px] text-muted-foreground">
-                  {r.item.code}
-                </p>
-              )}
-            </div>
-          ) : (
-            <span className="text-xs text-muted-foreground/50">—</span>
-          ),
-      },
-      {
-        id: "bom",
-        header: "Connected BOM",
-        widthClassName: "min-w-[12rem]",
-        filterField: "bom",
-        filterKind: "text",
-        filterPlaceholder: "BOM name…",
-        group: "Identity",
-        description: "BOM this routing pins to. Empty = works with any BOM. Filter by BOM name.",
-        cell: (r) =>
-          r.bom ? (
-            <span className="truncate text-xs text-muted-foreground">
-              {r.bom.code ?? r.bom.name}
-            </span>
-          ) : (
-            <span className="text-xs text-muted-foreground/40">Any BOM</span>
-          ),
       },
       {
         id: "updated_at",
@@ -345,21 +307,15 @@ export function RoutingsLedger({ initialPage }: Props) {
             </div>
             {!r.is_active && <Badge tone="muted">Archived</Badge>}
           </div>
-          {(r.item || r.bom) && (
-            <p className="text-[11px] text-muted-foreground">
-              {r.item?.name}
-              {r.bom ? ` · ${r.bom.code ?? r.bom.name}` : ""}
-            </p>
-          )}
         </div>
       )}
       emptyState={
         <div className="space-y-1">
           <Route className="mx-auto size-8 text-muted-foreground/40" />
-          <p className="text-sm font-medium">No routings yet</p>
+          <p className="text-sm font-medium">No templates yet</p>
           <p className="text-xs text-muted-foreground">
-            Pick a finished or semi-finished item and define the
-            operations + workstation groups it runs through.
+            Create a template once (ordered operations + workstation
+            groups), then NPD picks it from the formulation builder.
           </p>
         </div>
       }

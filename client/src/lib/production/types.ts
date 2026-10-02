@@ -210,6 +210,10 @@ export interface WorkstationGroup {
   hourly_rate_enabled: boolean;
   /** Decimal string when present (preserves precision in JSON). */
   hourly_rate: string | null;
+  /** Admin-configured fallback operator wage per hour. Used only
+   *  when kiosk-session averages don't exist yet — reality from HR
+   *  always wins. Decimal string when present. */
+  default_labour_rate_hourly: string | null;
   custom_working_hours: boolean;
   working_hours: WorkstationGroupWorkingHours;
   custom_holidays: boolean;
@@ -261,6 +265,7 @@ export interface WorkstationGroupUpsertInput {
   kind?: WorkstationGroupKind;
   hourly_rate_enabled?: boolean;
   hourly_rate?: string | null;
+  default_labour_rate_hourly?: string | null;
   custom_working_hours?: boolean;
   working_hours?: WorkstationGroupWorkingHours;
   custom_holidays?: boolean;
@@ -448,7 +453,14 @@ export interface RoutingStep {
   capacity: string;
   workstation_group_id: number;
   workstation_group: WorkstationGroupSummary | null;
+  source_routing_step_id: number | null;
   workers: RoutingStepWorker[];
+}
+
+export interface RoutingTemplateRef {
+  id: number;
+  uuid: string;
+  name: string;
 }
 
 export interface Routing {
@@ -458,11 +470,14 @@ export interface Routing {
   name: string;
   notes: string | null;
   is_active: boolean;
+  is_template: boolean;
   company_id: number;
-  item_id: number;
+  item_id: number | null;
   item: BOMPartSummary | null;
   bom_id: number | null;
   bom: BOMSummary | null;
+  source_template_id: number | null;
+  source_template: RoutingTemplateRef | null;
   other_fixed_cost: string | null;
   other_variable_cost: string | null;
   other_variable_cost_basis: string;
@@ -479,8 +494,10 @@ export interface RoutingSummary {
   code: string | null;
   name: string;
   is_active: boolean;
+  is_template: boolean;
   item: BOMPartSummary | null;
   bom: BOMSummary | null;
+  source_template: RoutingTemplateRef | null;
   created_by: AuditActor | null;
   updated_by: AuditActor | null;
   inserted_at: string;

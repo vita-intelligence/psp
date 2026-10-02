@@ -486,6 +486,105 @@ defmodule Backend.Vendors do
 
   # ----- approved-item edges ---------------------------------------
 
+  @doc """
+  Paginated + searchable list of a vendor's approved items. Powers
+  the vendor detail page's "Items this vendor is approved to supply"
+  card — the historic approach preloaded the entire set on the
+  detail payload (fine for 10, hostile at 10k) + rendered a chip
+  wall with no filter. This endpoint narrows to one page and
+  supports a server-side search over joined `items.name`,
+  `items.external_sku`, and `items.barcode`.
+
+  ``opts``:
+    * `:search` — case-insensitive match against item name / SKU /
+      barcode.
+    * `:limit` — defaults to 50, capped at 200.
+    * `:offset` — pagination cursor (offset in rows). Offset keeps
+      the response shape simple on the FE; the page sizes keep each
+      round-trip bounded.
+
+  Returns `%{items: [...], total: integer, has_more: boolean}`.
+  """
+  def list_approved_items_page(%Vendor{} = vendor, opts \\ []) do
+    import Ecto.Query
+
+    search = opts |> Keyword.get(:search) |> trim_nil()
+    limit = opts |> Keyword.get(:limit, 50) |> clamp_int(1, 200)
+    offset = opts |> Keyword.get(:offset, 0) |> max_int(0)
+
+    base =
+      from(ai in ApprovedItem,
+        join: i in assoc(ai, :item),
+        where: ai.vendor_id == ^vendor.id
+      )
+
+    filtered =
+      case search do
+        nil ->
+          base
+
+        term ->
+          needle = "%" <> Backend.ListQueries.escape_like(term) <> "%"
+
+          from([ai, i] in base,
+            where:
+              ilike(i.name, ^needle) or
+                ilike(coalesce(i.external_sku, ""), ^needle) or
+                ilike(coalesce(i.barcode, ""), ^needle)
+          )
+      end
+
+    total = Repo.aggregate(filtered, :count, :id)
+
+    rows =
+      from([ai, i] in filtered,
+        order_by: [desc: ai.approved_at, desc: ai.id],
+        limit: ^limit,
+        offset: ^offset,
+        select: ai
+      )
+      |> Repo.all()
+      |> Repo.preload([:item, :approved_by])
+
+    %{items: rows, total: total, has_more: offset + length(rows) < total}
+  end
+
+  defp trim_nil(nil), do: nil
+  defp trim_nil(""), do: nil
+
+  defp trim_nil(s) when is_binary(s) do
+    case String.trim(s) do
+      "" -> nil
+      t -> t
+    end
+  end
+
+  defp trim_nil(_), do: nil
+
+  defp clamp_int(n, _lo, hi) when is_integer(n) and n > hi, do: hi
+  defp clamp_int(n, lo, _hi) when is_integer(n) and n < lo, do: lo
+  defp clamp_int(n, _lo, _hi) when is_integer(n), do: n
+
+  defp clamp_int(raw, lo, hi) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, _} -> clamp_int(n, lo, hi)
+      _ -> lo
+    end
+  end
+
+  defp clamp_int(_, lo, _hi), do: lo
+
+  defp max_int(n, lo) when is_integer(n), do: if(n < lo, do: lo, else: n)
+
+  defp max_int(raw, lo) when is_binary(raw) do
+    case Integer.parse(raw) do
+      {n, _} -> max_int(n, lo)
+      _ -> lo
+    end
+  end
+
+  defp max_int(_, lo), do: lo
+
   def add_approved_item(%User{} = actor, %Vendor{} = vendor, item_id, attrs \\ %{}) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
