@@ -912,7 +912,10 @@ defmodule Backend.Shipments do
 
   defp resolve_pickup_file_ids(_shipment, _), do: {:error, :pickup_file_not_found}
 
-  defp ensure_photo_count([]), do: {:error, :pickup_photo_required}
+  defp ensure_photo_count([]) do
+    if Backend.PhotoCapture.enforce?(), do: {:error, :pickup_photo_required}, else: :ok
+  end
+
   defp ensure_photo_count(_), do: :ok
 
   defp pickup_files_without_event(%Shipment{id: id}) do

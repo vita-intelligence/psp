@@ -918,14 +918,16 @@ defmodule Backend.Warehouses.ReturnPickup do
   defp ensure_photo(attrs) when is_map(attrs) do
     photo = attrs["photo_url"] || attrs[:photo_url]
 
-    if is_binary(photo) and photo != "" do
-      :ok
-    else
-      {:error, :photo_required}
+    cond do
+      is_binary(photo) and photo != "" -> :ok
+      not Backend.PhotoCapture.enforce?() -> :ok
+      true -> {:error, :photo_required}
     end
   end
 
-  defp ensure_photo(_), do: {:error, :photo_required}
+  defp ensure_photo(_) do
+    if Backend.PhotoCapture.enforce?(), do: {:error, :photo_required}, else: :ok
+  end
 
   defp ensure_not_same_cell(from_id, to_id) when from_id == to_id,
     do: {:error, :same_cell}

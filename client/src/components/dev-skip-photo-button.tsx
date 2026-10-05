@@ -13,10 +13,13 @@
  *     so a QA scan can distinguish dev stubs from real photo URLs.
  *
  * Prod safety:
- *   * The env check runs at render time. Next.js inlines
- *     ``process.env.NODE_ENV`` at build so this branch is
- *     tree-shaken to ``null`` in the production bundle — the JSX
- *     is not shipped, not just hidden.
+ *   * The gate (``shouldRenderDevSkip``) tree-shakes to ``false`` in
+ *     the production bundle because ``NEXT_PUBLIC_ALLOW_DEV_SKIP``
+ *     is not set in the prod build and ``process.env.NODE_ENV`` is
+ *     ``"production"`` — the JSX is not shipped, not just hidden.
+ *   * Sandbox opts in by building with
+ *     ``--build-arg NEXT_PUBLIC_ALLOW_DEV_SKIP=1`` so operators can
+ *     walk flows without staging real photos at every step.
  *   * BE has no dev-only code path. The marker string is a normal
  *     photo_url value; only its recognisable prefix signals it was
  *     a dev bypass.
@@ -48,6 +51,19 @@ export function realPhotoUrl(
 }
 
 
+/**
+ * Whether the dev-skip affordance should render in this build. True when:
+ *   * ``NODE_ENV === "development"`` (local ``next dev``), OR
+ *   * ``NEXT_PUBLIC_ALLOW_DEV_SKIP === "1"`` (sandbox build opt-in).
+ * Prod builds set neither, so the whole JSX tree-shakes out.
+ */
+export function shouldRenderDevSkip(): boolean {
+  return (
+    process.env.NODE_ENV === "development" ||
+    process.env.NEXT_PUBLIC_ALLOW_DEV_SKIP === "1"
+  );
+}
+
 export function DevSkipPhotoButton({
   onSkip,
   label = "Skip photo (dev only)",
@@ -58,7 +74,7 @@ export function DevSkipPhotoButton({
   label?: string;
   className?: string;
 }) {
-  if (process.env.NODE_ENV !== "development") return null;
+  if (!shouldRenderDevSkip()) return null;
 
   const marker = `dev-skip:${new Date().toISOString()}`;
 

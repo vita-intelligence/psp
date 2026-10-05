@@ -11914,10 +11914,10 @@ defmodule Backend.Production do
   defp ensure_photo(attrs) do
     photo = attrs["photo_url"]
 
-    if is_binary(photo) and photo != "" do
-      :ok
-    else
-      {:error, :photo_required}
+    cond do
+      is_binary(photo) and photo != "" -> :ok
+      not Backend.PhotoCapture.enforce?() -> :ok
+      true -> {:error, :photo_required}
     end
   end
 

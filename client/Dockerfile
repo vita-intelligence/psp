@@ -24,9 +24,14 @@ ARG NEXT_PUBLIC_API_URL
 ARG NEXT_PUBLIC_WS_URL
 # Sandbox-only escape hatch — see next.config.ts. Prod never sets it.
 ARG NEXT_IGNORE_BUILD_ERRORS
+# Sandbox-only — surfaces the "Skip photo (dev only)" affordance on
+# every mandatory photo capture. Prod never sets it so the JSX
+# tree-shakes out via ``shouldRenderDevSkip``.
+ARG NEXT_PUBLIC_ALLOW_DEV_SKIP
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
     NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL} \
     NEXT_IGNORE_BUILD_ERRORS=${NEXT_IGNORE_BUILD_ERRORS} \
+    NEXT_PUBLIC_ALLOW_DEV_SKIP=${NEXT_PUBLIC_ALLOW_DEV_SKIP} \
     NEXT_TELEMETRY_DISABLED=1
 
 COPY --from=deps /app/node_modules ./node_modules
