@@ -280,7 +280,17 @@ function ProjectSelect({
 interface VendorCluster {
   key: string;
   vendor: ShortageVendorCandidate | null;
+  /** Every short item the vendor CAN supply (either as primary or as
+   *  an approved alternate). A row with two eligible vendors appears
+   *  in two clusters — intentional, so the buyer can raise one PO
+   *  per supplier. Primary-vs-alternate status is derived at render
+   *  time from each row's own ``vendor_candidates[0]``. */
   rows: ShortageRow[];
+  /** Count of rows in this cluster that ALSO appear in some other
+   *  cluster. Surfaced as a soft warning on the card so the buyer
+   *  knows that ordering here might double-source an item that's
+   *  already covered by another vendor's PO. */
+  sharedCount: number;
 }
 
 function VendorClusterView({
@@ -298,16 +308,61 @@ function VendorClusterView({
 }) {
   const clusters = useMemo<VendorCluster[]>(() => {
     const map = new Map<string, VendorCluster>();
+
+    // Fan each row out to EVERY vendor that's approved to ship it, not
+    // just the primary. The buyer explicitly asked for "a PO button
+    // per vendor with every item that vendor can supply" — primary
+    // ranking still matters for sort order within the card and
+    // decides the "approved alternate" visual, but it doesn't gate
+    // inclusion. Rows with zero candidates land in the Unassigned
+    // bucket pinned to the top so they can't be missed.
     for (const row of rows) {
-      const primary = row.vendor_candidates?.[0] ?? null;
-      const key = primary ? `v:${primary.vendor_id}` : UNASSIGNED_KEY;
-      let cluster = map.get(key);
-      if (!cluster) {
-        cluster = { key, vendor: primary, rows: [] };
-        map.set(key, cluster);
+      const candidates = row.vendor_candidates ?? [];
+      if (candidates.length === 0) {
+        let cluster = map.get(UNASSIGNED_KEY);
+        if (!cluster) {
+          cluster = { key: UNASSIGNED_KEY, vendor: null, rows: [], sharedCount: 0 };
+          map.set(UNASSIGNED_KEY, cluster);
+        }
+        cluster.rows.push(row);
+        continue;
       }
-      cluster.rows.push(row);
+      for (const v of candidates) {
+        const key = `v:${v.vendor_id}`;
+        let cluster = map.get(key);
+        if (!cluster) {
+          cluster = { key, vendor: v, rows: [], sharedCount: 0 };
+          map.set(key, cluster);
+        }
+        cluster.rows.push(row);
+      }
     }
+
+    // Sort rows within each cluster: primary rows first (where this
+    // cluster's vendor is the row's top candidate), then alternates.
+    // Within each group, biggest shortage first — matches the flat-
+    // list view's default sort so operators see the same ordering.
+    for (const cluster of map.values()) {
+      if (!cluster.vendor) continue;
+      const vendorId = cluster.vendor.vendor_id;
+      cluster.rows.sort((a, b) => {
+        const aPrimary = a.vendor_candidates?.[0]?.vendor_id === vendorId ? 0 : 1;
+        const bPrimary = b.vendor_candidates?.[0]?.vendor_id === vendorId ? 0 : 1;
+        if (aPrimary !== bPrimary) return aPrimary - bPrimary;
+        return Number(b.shortage_qty) - Number(a.shortage_qty);
+      });
+    }
+
+    // Tally shared rows per cluster. A "shared" row is one with at
+    // least two candidates — picking this vendor means that item will
+    // also show up under some OTHER vendor's cluster. Surfaced as a
+    // soft warning so the buyer thinks before double-sourcing.
+    for (const cluster of map.values()) {
+      cluster.sharedCount = cluster.rows.filter(
+        (r) => (r.vendor_candidates?.length ?? 0) > 1,
+      ).length;
+    }
+
     const out = Array.from(map.values());
     out.sort((a, b) => {
       if (a.key === UNASSIGNED_KEY) return -1;
@@ -387,15 +442,19 @@ function VendorClusterCard({
 
   const estimatedSpend = useMemo(() => {
     if (!cluster.vendor) return null;
+    const vendorId = cluster.vendor.vendor_id;
     let total = 0;
     let currency: string | null = null;
     for (const r of cluster.rows) {
-      // Match the row's shortage qty against the primary vendor's
-      // term price. Mixed-currency clusters surface the first
-      // currency we see and skip rows that don't match it — a
-      // deliberate choice to avoid pretending we can sum GBP + USD
-      // without the FX leg.
-      const vendor = r.vendor_candidates?.[0];
+      // Look up THIS vendor's price-per-item (not the row's primary
+      // vendor). For alternate rows the primary might be a different
+      // supplier at a different price, so always resolve the cluster
+      // vendor's own candidate entry. Mixed-currency clusters pin to
+      // the first currency we see and skip the rest — summing GBP +
+      // USD without an FX leg would be dishonest.
+      const vendor = (r.vendor_candidates ?? []).find(
+        (v) => v.vendor_id === vendorId,
+      );
       if (!vendor?.price) continue;
       if (currency === null) currency = vendor.currency_code;
       if (vendor.currency_code !== currency) continue;
@@ -449,6 +508,15 @@ function VendorClusterCard({
             <span>· {cluster.vendor.lead_time_days}d lead</span>
           )}
           {estimatedSpend && <span>· est. {estimatedSpend}</span>}
+          {cluster.sharedCount > 0 && !isOrphan && (
+            <span
+              className="inline-flex items-center gap-1 rounded-full border border-dashed border-amber-500/40 px-1.5 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300"
+              title="These items have more than one approved vendor — the same shortage also appears under those other vendors' cards. Ordering here will cover those lines; don't raise a second PO for the same items on another vendor."
+            >
+              <AlertTriangle className="size-2.5" />
+              {cluster.sharedCount} multi-sourced
+            </span>
+          )}
           {cluster.vendor?.source === "approved" && (
             <span className="rounded-full border border-dashed border-amber-500/40 px-1.5 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300">
               approved only
@@ -491,6 +559,7 @@ function VendorClusterCard({
                 <ClusterRowItem
                   key={String(r.item?.id ?? r.item?.uuid ?? r.shortage_qty)}
                   row={r}
+                  clusterVendorId={cluster.vendor?.vendor_id ?? null}
                   companyDateFormat={companyDateFormat}
                 />
               ))}
@@ -504,14 +573,26 @@ function VendorClusterCard({
 
 function ClusterRowItem({
   row,
+  clusterVendorId,
   companyDateFormat,
 }: {
   row: ShortageRow;
+  /** The vendor_id this cluster was built for. We compare it against
+   *  the row's own primary candidate to decide whether to badge this
+   *  row as "primary" (unmarked = default) or "alternate" (visible
+   *  badge so the buyer knows another supplier would normally win). */
+  clusterVendorId: number | null;
   companyDateFormat: FormatPrefs | null;
 }) {
   const uom = row.line_uom?.symbol ?? row.item?.stock_uom?.symbol ?? "";
   const shortage = formatQtyHumanized(row.shortage_qty, uom, companyDateFormat);
   const required = formatQtyHumanized(row.required_qty, uom, companyDateFormat);
+  const primaryVendorId = row.vendor_candidates?.[0]?.vendor_id ?? null;
+  const isAlternate =
+    clusterVendorId != null &&
+    primaryVendorId != null &&
+    clusterVendorId !== primaryVendorId;
+  const primaryName = row.vendor_candidates?.[0]?.vendor_name ?? null;
   return (
     <tr className="border-t border-border/40 text-xs">
       <td className="px-4 py-2">
@@ -522,6 +603,18 @@ function ClusterRowItem({
           {row.is_rnd && (
             <span className="shrink-0 rounded-full border border-purple-500/30 bg-purple-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-purple-700 dark:text-purple-400">
               R&amp;D
+            </span>
+          )}
+          {isAlternate && (
+            <span
+              className="shrink-0 rounded-full border border-dashed border-amber-500/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300"
+              title={
+                primaryName
+                  ? `Alternate supplier — ${primaryName} is primary for this item.`
+                  : "Alternate supplier — this vendor isn't primary for this item."
+              }
+            >
+              alternate
             </span>
           )}
         </div>
