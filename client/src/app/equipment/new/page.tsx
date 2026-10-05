@@ -32,7 +32,7 @@ export default async function NewEquipmentPage() {
     <div className="flex flex-1 flex-col">
       <TopBar user={user} />
       <main className="flex-1 px-4 py-6 sm:px-6 sm:py-8">
-        <div className="mx-auto max-w-2xl space-y-6">
+        <div className="mx-auto w-full space-y-6">
           <PageHeader
             icon={Cog}
             title="New equipment"
