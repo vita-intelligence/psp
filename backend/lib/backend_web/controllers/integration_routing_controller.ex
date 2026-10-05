@@ -282,14 +282,19 @@ defmodule BackendWeb.IntegrationRoutingController do
 
   # ``name`` is the natural upsert key. Routings carry a unique
   # constraint on ``(company_id, name)``, so we key off that plus
-  # ``item_id`` to avoid clobbering an operator-created routing
-  # that happens to share a name across items.
-  defp existing_routing(company_id, item_id, name) do
+  # Lookup is by ``(company_id, item_id)`` only. The DB enforces one
+  # routing per item (``routings_item_snapshot_index`` unique on the
+  # same tuple), so matching on ``name`` on top of that would always
+  # be redundant — and actively harmful when NPD re-pushes with a
+  # renamed stage: the lookup would miss, the fallback would fall
+  # through to ``create_routing``, and the unique constraint would
+  # bounce with "this item already has a routing snapshot". Keeping
+  # the lookup aligned with the constraint makes the upsert actually
+  # idempotent, which the caller contract has always assumed.
+  defp existing_routing(company_id, item_id, _name) do
     Repo.one(
       from r in Routing,
-        where:
-          r.company_id == ^company_id and r.item_id == ^item_id and
-            r.name == ^name,
+        where: r.company_id == ^company_id and r.item_id == ^item_id,
         limit: 1
     )
   end
