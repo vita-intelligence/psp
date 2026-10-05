@@ -2196,7 +2196,15 @@ defmodule Backend.Production do
     end
   end
 
-  @max_cascade_depth 5
+  # Formulations with N stages produce an N-level BOM chain
+  # (finished → stage_{n-1} → … → stage_0, where stage_0 holds the raw
+  # materials). The sub-MO cascade MUST reach stage_0 or the operator
+  # sees a half-populated chain missing the stage with every actual
+  # ingredient. Vitamin Powder shipped with 7 stages → depth 6, which
+  # the old cap of 5 silently truncated. 25 is still a safety ceiling
+  # against a data-corruption cycle without clipping any realistic
+  # formulation.
+  @max_cascade_depth 25
 
   # Walk the MO's BOM for semi-finished inputs whose existing-stock
   # booking didn't cover the full requirement. For each shortfall,
