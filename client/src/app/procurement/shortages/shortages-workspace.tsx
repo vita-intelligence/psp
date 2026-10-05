@@ -430,7 +430,13 @@ function VendorClusterCard({
       : window.btoa(JSON.stringify(payload));
     const base64url = base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     const qs = new URLSearchParams();
-    qs.set("vendor_id", String(cluster.vendor!.vendor_id));
+    // Pass the vendor UUID, not the numeric id — ``/api/vendors/:id``
+    // on the backend fetches by uuid (``Vendors.get_for_company``
+    // guards on ``is_binary``), so a numeric id 404s silently and
+    // the picker stays empty. Numeric id is still needed for the
+    // final submit payload; the form resolves uuid → id after the
+    // vendor fetch returns.
+    qs.set("vendor_uuid", cluster.vendor!.vendor_uuid);
     qs.set("prefill", base64url);
     // Preserve the R&D flag if every row in the cluster is R&D. Mixed
     // clusters leave the flag off so the buyer sees the explicit

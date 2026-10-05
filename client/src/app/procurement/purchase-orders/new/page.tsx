@@ -14,11 +14,20 @@ export const metadata = { title: "New PO · Procurement · PSP" };
 interface SearchParams {
   item_uuid?: string;
   qty?: string;
-  /** Numeric vendor id — the my-tasks reorder task and the shortages
-   *  page can both pre-select the last-known supplier so the buyer
-   *  doesn't retype it. Nullable — form falls back to the vendor
-   *  picker when absent. */
+  /** Numeric vendor id — legacy deep-link from the my-tasks reorder
+   *  flow (if it ever carried a numeric id). Fetching by numeric id
+   *  isn't supported by ``/api/vendors/:id`` (it guards on uuid), so
+   *  this prop stays for back-compat only — the form just stashes
+   *  it in state and the submit payload uses it directly. Prefer
+   *  ``vendor_uuid`` for new deep-links.
+   */
   vendor_id?: string;
+  /** Vendor UUID — the real identity ``/api/vendors/:id`` fetches by.
+   *  Shortages → "Create PO for this vendor" cluster link sends this
+   *  so the picker auto-populates (currency / tax rate / lead time
+   *  all come from the vendor fetch). Numeric id for submit is
+   *  resolved from the fetch response. */
+  vendor_uuid?: string;
   /** ``1`` when the shortages page linked us from an R&D row. Pre-
    *  ticks the ``For R&D`` checkbox so the resulting PO's lots
    *  inherit ``is_rnd = true``. */
@@ -45,7 +54,8 @@ export default async function NewPOPage({
   // Deep-link prefill from the shortages page + my-tasks reorder
   // tasks — read on the server so the form mounts with the prefill
   // in its initial state, no post-mount fetch + insert dance required.
-  const { item_uuid, qty, vendor_id, is_rnd, prefill } = await searchParams;
+  const { item_uuid, qty, vendor_id, vendor_uuid, is_rnd, prefill } =
+    await searchParams;
 
   // Decode the bulk-prefill blob. Base64url over JSON keeps the URL
   // compact for a vendor cluster of ~10-20 lines (well under any
@@ -121,6 +131,7 @@ export default async function NewPOPage({
             prefillItemUuid={item_uuid ?? null}
             prefillQty={qty ?? null}
             prefillVendorId={vendor_id ?? null}
+            prefillVendorUuid={vendor_uuid ?? null}
             prefillIsRnd={is_rnd === "1" || is_rnd === "true"}
             prefillLines={prefillLines}
           />

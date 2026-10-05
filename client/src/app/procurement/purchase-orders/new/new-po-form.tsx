@@ -182,11 +182,18 @@ interface NewPOFormProps {
    *  without a Suspense dance around `useSearchParams`. */
   prefillItemUuid?: string | null;
   prefillQty?: string | null;
-  /** Numeric vendor id — sets `state.vendorId` on mount. The collab-
-   *  resync effect then fetches the vendor row + populates the
-   *  currency / tax_rate defaults. Null skips the prefill and the
-   *  buyer picks a vendor themselves. */
+  /** Numeric vendor id — kept for back-compat but no longer the
+   *  recommended way to prefill. ``/api/vendors/:id`` fetches by
+   *  uuid, so a numeric id here never populates the picker — it
+   *  just lands in state so the submit payload has a vendor_id to
+   *  send. Prefer ``prefillVendorUuid``. */
   prefillVendorId?: string | null;
+  /** Vendor UUID — the identity ``/api/vendors/:id`` actually fetches
+   *  by. Shortages → "Create PO for this vendor" uses this so the
+   *  picker auto-populates. The form resolves uuid → numeric id
+   *  after the fetch returns, and stashes that id in state for the
+   *  final submit payload. */
+  prefillVendorUuid?: string | null;
   /** ``For R&D`` flag from the shortages page — set when the row
    *  aggregates trial / sample MO demand. Pre-ticks the checkbox
    *  so received lots inherit ``is_rnd = true`` and the booking
@@ -206,6 +213,7 @@ export function NewPOForm({
   prefillItemUuid = null,
   prefillQty = null,
   prefillVendorId = null,
+  prefillVendorUuid = null,
   prefillIsRnd = false,
   prefillLines = null,
 }: NewPOFormProps = {}) {
@@ -522,6 +530,43 @@ export function NewPOForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefillVendorId]);
 
+  // ── Vendor UUID prefill (shortages → "Create PO for this vendor") ─
+  // ``/api/vendors/:id`` fetches by UUID, but the form stashes the
+  // NUMERIC id in state (submit payload builds ``Number(state.vendorId)``).
+  // So when a deep-link provides a UUID, we have to fetch the vendor
+  // once, pull its numeric id out of the response, and then stash
+  // that in state. The collab-resync effect downstream picks up the
+  // state change and populates ``selectedVendor`` so the picker + the
+  // currency / tax-rate defaults land.
+  const vendorUuidPrefillRef = useRef(false);
+  useEffect(() => {
+    if (vendorUuidPrefillRef.current) return;
+    if (!prefillVendorUuid) return;
+    if (state.vendorId) return;
+    vendorUuidPrefillRef.current = true;
+
+    let cancelled = false;
+    const controller = new AbortController();
+    fetch(`/api/vendors/${encodeURIComponent(prefillVendorUuid)}`, {
+      signal: controller.signal,
+      cache: "no-store",
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body: { vendor?: { id: number } } | null) => {
+        if (cancelled) return;
+        if (!body?.vendor?.id) return;
+        setField("vendorId", String(body.vendor.id));
+      })
+      .catch(() => {
+        /* aborted / 404 — buyer picks the vendor manually. */
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillVendorUuid]);
+
   // ── Deep-link prefill (from the shortages page + reorder tasks) ─
   // Reads `?item_uuid=…&qty=…` once on mount. Fetches the item by
   // uuid to populate the picker label, then drops a pre-filled line
@@ -575,11 +620,16 @@ export function NewPOForm({
   }, [prefillItemUuid]);
 
   // ── Bulk prefill (shortages → "Create PO for this vendor") ──────
-  // One fetch per line (keeps the existing single-fetch pattern) —
-  // operator-triggered path, N is small (≤ catalogue size), and
-  // sequential is fine. StrictMode double-mount is handled by the
-  // same ``prefillAppliedRef`` guard the single-item branch uses so
-  // a dev-only remount can't duplicate the lines.
+  // Fetch every item in parallel first, then batch-append all drafts
+  // in ONE setField call. Earlier version called addLineWithItem in
+  // a loop, which read ``state.lines`` from a stale closure every
+  // iteration — each call clobbered the previous, so only one line
+  // ever landed. Doing one setField at the end sidesteps the closure
+  // problem entirely.
+  //
+  // Default warehouse pulled from a ref so the latest value is seen
+  // even if a peer updated it between mount and when the fetches
+  // resolve.
   useEffect(() => {
     if (!prefillLines || prefillLines.length === 0) return;
     if (prefillAppliedRef.current) return;
@@ -589,30 +639,65 @@ export function NewPOForm({
 
     (async () => {
       try {
-        for (const row of prefillLines) {
-          if (cancelled) return;
-          const res = await fetch(
-            `/api/items/${encodeURIComponent(row.item_uuid)}`,
-            { signal: controller.signal, cache: "no-store" },
-          );
-          if (!res.ok) continue;
-          const body = (await res.json()) as {
-            item?: {
-              id: number;
-              uuid: string;
-              name: string;
-              code?: string | null;
-              external_sku?: string | null;
-            };
-          };
-          if (cancelled) return;
-          if (!body?.item) continue;
-          addLineWithItem(
-            itemRowToOption(body.item),
-            trimDecimalZeros(row.qty ?? ""),
-          );
+        const resolved = await Promise.all(
+          prefillLines.map(async (row) => {
+            try {
+              const res = await fetch(
+                `/api/items/${encodeURIComponent(row.item_uuid)}`,
+                { signal: controller.signal, cache: "no-store" },
+              );
+              if (!res.ok) return null;
+              const body = (await res.json()) as {
+                item?: {
+                  id: number;
+                  uuid: string;
+                  name: string;
+                  code?: string | null;
+                  external_sku?: string | null;
+                };
+              };
+              if (!body?.item) return null;
+              return { item: body.item, qty: row.qty };
+            } catch {
+              return null;
+            }
+          }),
+        );
+        if (cancelled) return;
+        const live = resolved.filter(
+          (r): r is { item: { id: number; uuid: string; name: string; code?: string | null; external_sku?: string | null }; qty: string | null } =>
+            r !== null,
+        );
+        if (live.length === 0) {
+          prefillAppliedRef.current = true;
+          return;
         }
-        if (!cancelled) prefillAppliedRef.current = true;
+
+        // Build all drafts first so setField fires once with the
+        // whole batch — any stale ``state.lines`` closure read would
+        // clobber everything otherwise. The initial state has
+        // ``lines: []`` and this effect only runs on mount, so
+        // appending to the closed-over ``state.lines`` is safe.
+        const warehouseId = state.default_warehouse_id;
+        const newDrafts: POLineDraft[] = live.map(({ item, qty }) => ({
+          tempId: crypto.randomUUID(),
+          item_id: String(item.id),
+          qty_ordered: trimDecimalZeros(qty ?? ""),
+          unit_price: "",
+          vendor_part_no: "",
+          warehouse_id: warehouseId,
+          expected_delivery_date: "",
+          notes: "",
+          reservations: [],
+        }));
+        const newPicks: Record<string, ItemOption> = {};
+        live.forEach(({ item }, i) => {
+          newPicks[newDrafts[i].tempId] = itemRowToOption(item);
+        });
+
+        setField("lines", [...state.lines, ...newDrafts]);
+        setPickedItems((prev) => ({ ...prev, ...newPicks }));
+        prefillAppliedRef.current = true;
       } catch {
         /* aborted — StrictMode remount will retry */
       }
