@@ -1333,6 +1333,12 @@ defmodule BackendWeb.Router do
     # has a single list of "what to order next".
     get "/procurement/shortages", ProcurementShortagesController, :index
 
+    # Distinct projects (NPD formulations) with at least one open-MO
+    # shortage. Powers the shortage page's project filter combobox.
+    get "/procurement/shortages/projects",
+        ProcurementShortagesController,
+        :projects
+
     # Reorder suggestions — items whose coverage (on-hand + in-flight
     # PO qty) has fallen below their configured min_stock_qty. Feeds
     # the my-tasks queue for users with procurement.po_create and the

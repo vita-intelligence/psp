@@ -20,9 +20,11 @@ defmodule Backend.Procurement.Shortages do
 
   import Ecto.Query
 
+  alias Backend.CustomerOrders.{CustomerOrder, CustomerOrderLine}
   alias Backend.Items.Item
   alias Backend.Production.{BOM, BOMLine, ManufacturingOrder, ManufacturingOrderBooking}
-  alias Backend.Purchasing.{PurchaseOrder, PurchaseOrderLine}
+  alias Backend.Purchasing.{PurchaseOrder, PurchaseOrderLine, PurchaseTerm, VendorItemPrice}
+  alias Backend.Vendors.{ApprovedItem, Vendor}
   alias Backend.Repo
 
   # Procurement only sees MOs that the planner has explicitly flagged
@@ -62,6 +64,7 @@ defmodule Backend.Procurement.Shortages do
       |> apply_search(opts[:search])
       |> apply_filters(opts[:filters] || %{})
       |> apply_column_filters(opts[:column_filter] || %{})
+      |> apply_project_filter(opts[:formulation_uuid])
       |> apply_sort(opts[:sort])
 
     limit = clamp_limit(opts[:limit])
@@ -240,6 +243,25 @@ defmodule Backend.Procurement.Shortages do
   # stale FE / dev-tools-typed filter doesn't error the page.
   defp apply_column_filter(rows, _field, _spec), do: rows
 
+  # Project filter: keep only shortage rows that have at least one
+  # dependent MO rooted on a customer order with the given NPD
+  # formulation uuid. Walking up ``parent_mo_id`` lands on the root
+  # MO; its ``customer_order_lines.customer_orders.npd_formulation_uuid``
+  # is the stable project identity (same uuid the CFF formulation page
+  # uses).
+  defp apply_project_filter(rows, nil), do: rows
+  defp apply_project_filter(rows, ""), do: rows
+
+  defp apply_project_filter(rows, formulation_uuid) when is_binary(formulation_uuid) do
+    Enum.filter(rows, fn r ->
+      Enum.any?(r.dependent_mos || [], fn mo ->
+        to_string(mo[:formulation_uuid] || mo["formulation_uuid"] || "") == formulation_uuid
+      end)
+    end)
+  end
+
+  defp apply_project_filter(rows, _), do: rows
+
   defp parse_decimal(nil), do: nil
   defp parse_decimal(""), do: nil
   defp parse_decimal(v) when is_number(v), do: Decimal.new(to_string(v))
@@ -353,6 +375,7 @@ defmodule Backend.Procurement.Shortages do
       end
 
     dependent_mos = compute_dependent_mos(company_id, item_ids)
+    vendor_candidates = compute_vendor_candidates(company_id, item_ids)
 
     requirements
     |> Enum.map(fn {{item_id, is_rnd}, required} ->
@@ -410,7 +433,13 @@ defmodule Backend.Procurement.Shortages do
         # differently so procurement knows they're operator-flagged
         # (vs auto-derived from raw shortage).
         explicit_request: explicit_request,
-        dependent_mos: Map.get(dependent_mos, {item_id, is_rnd}, [])
+        dependent_mos: Map.get(dependent_mos, {item_id, is_rnd}, []),
+        # Ranked list of vendors that CAN ship this item today.
+        # Primary signal: ``vendor_item_purchase_terms`` (priority 1 =
+        # the primary supplier). Fallback: ``vendor_approved_items``
+        # (approved to ship but no commercial baseline yet). Price
+        # history enriches the chip metadata when available.
+        vendor_candidates: Map.get(vendor_candidates, item_id, [])
       }
     end)
     # Keep only rows procurement genuinely has to buy: net shortage
@@ -877,6 +906,13 @@ defmodule Backend.Procurement.Shortages do
 
     rows = bom_rows ++ overlay_rows
 
+    # Walk every referenced MO to its root (so sub-stage MOs inherit
+    # their parent's customer order + formulation uuid). The root is
+    # the one that carries ``customer_order_line_id``; sub-MOs set it
+    # to nil. This gives procurement a stable project identity to
+    # filter + group by on the shortages page.
+    project_by_mo_id = resolve_mo_projects(company_id, Enum.map(rows, & &1.mo_id))
+
     # Grouped by ``{part_id, is_rnd}`` so a row can list only the MOs
     # from its own stream — production row for Acai lists production
     # MOs, R&D row lists trial / sample MOs.
@@ -894,6 +930,8 @@ defmodule Backend.Procurement.Shortages do
             |> Enum.reject(&is_nil/1)
             |> Enum.min(DateTime, fn -> nil end)
 
+          project = Map.get(project_by_mo_id, id, %{formulation_uuid: nil, formulation_name: nil})
+
           %{
             uuid: first.mo_uuid,
             # Rendered MO code (e.g. MO00016) — same identifier the
@@ -903,7 +941,13 @@ defmodule Backend.Procurement.Shortages do
             status: first.status,
             quantity: Decimal.to_string(first.quantity || Decimal.new(0)),
             item_name: first.mo_item_name,
-            planned_start: earliest_start
+            planned_start: earliest_start,
+            # Project identity resolved via root MO → CO line → CO.
+            # ``formulation_uuid`` is the stable key the FE filters on;
+            # ``formulation_name`` is the human label (customer order
+            # line's item name = the finished-product name on NPD).
+            formulation_uuid: project[:formulation_uuid],
+            formulation_name: project[:formulation_name]
           }
         end)
         |> Enum.sort_by(fn r -> r.planned_start || ~U[2099-01-01 00:00:00Z] end, DateTime)
@@ -930,5 +974,253 @@ defmodule Backend.Procurement.Shortages do
 
   defp uom_payload(%Backend.Units.UnitOfMeasurement{} = uom) do
     %{id: uom.id, symbol: uom.symbol, name: uom.name}
+  end
+
+  # ──────────────────────────────────────────────────────────────────
+  # Vendor-candidate resolution
+  # ──────────────────────────────────────────────────────────────────
+  #
+  # For each shortage item, return the ranked list of vendors who can
+  # ship it today. Signal priority:
+  #
+  #   1. ``vendor_item_purchase_terms`` — explicit commercial baseline
+  #      (vendor_part_no, lead_time_days, price, min_quantity). Ranked
+  #      by ``priority`` ASC; priority 1 is the primary supplier.
+  #   2. ``vendor_approved_items`` — approved to ship but no term yet
+  #      (fallback for freshly-approved vendors). Appended after terms.
+  #
+  # Enrichment: ``vendor_item_prices`` injects the last-paid price
+  # (per vendor + currency) onto whichever candidate matches, so the
+  # buyer sees "what we actually paid last time" alongside the
+  # commercial baseline. Vendors without a price-history row surface
+  # with the term's price only.
+  #
+  # One row per vendor per item — if the same vendor has both a term
+  # and an approved-item row, the term wins (strongest signal) and the
+  # approved-item row is dropped.
+  defp compute_vendor_candidates(_company_id, []), do: %{}
+
+  defp compute_vendor_candidates(company_id, item_ids) do
+    terms =
+      from(t in PurchaseTerm,
+        join: v in Vendor, on: v.id == t.vendor_id,
+        where: t.company_id == ^company_id and t.item_id in ^item_ids,
+        order_by: [asc: t.item_id, asc: t.priority, asc: t.min_quantity],
+        select: %{
+          item_id: t.item_id,
+          vendor_id: v.id,
+          vendor_uuid: v.uuid,
+          vendor_name: v.name,
+          priority: t.priority,
+          lead_time_days: t.lead_time_days,
+          price: t.price,
+          currency_code: t.currency_code,
+          vendor_part_no: t.vendor_part_no,
+          min_quantity: t.min_quantity
+        }
+      )
+      |> Repo.all()
+
+    approved =
+      from(a in ApprovedItem,
+        join: v in Vendor, on: v.id == a.vendor_id,
+        where: a.company_id == ^company_id and a.item_id in ^item_ids,
+        select: %{
+          item_id: a.item_id,
+          vendor_id: v.id,
+          vendor_uuid: v.uuid,
+          vendor_name: v.name
+        }
+      )
+      |> Repo.all()
+
+    # Last-paid price per (vendor, item). Enrichment only — doesn't
+    # drive ranking. If multiple currencies exist for the same pair we
+    # keep the most-recent row (price-history service writes one
+    # row per currency; last-paid wins per currency slot).
+    price_history =
+      from(p in VendorItemPrice,
+        where: p.company_id == ^company_id and p.item_id in ^item_ids,
+        order_by: [desc: p.last_paid_at],
+        select: %{
+          item_id: p.item_id,
+          vendor_id: p.vendor_id,
+          unit_price: p.unit_price,
+          currency_code: p.currency_code,
+          last_paid_at: p.last_paid_at
+        }
+      )
+      |> Repo.all()
+      |> Enum.reduce(%{}, fn r, acc ->
+        Map.put_new(acc, {r.item_id, r.vendor_id}, r)
+      end)
+
+    # Dedup: term wins over approved-item for the same (item, vendor).
+    term_keys = terms |> Enum.map(fn t -> {t.item_id, t.vendor_id} end) |> MapSet.new()
+
+    term_rows =
+      Enum.map(terms, fn t ->
+        hist = Map.get(price_history, {t.item_id, t.vendor_id})
+
+        %{
+          vendor_id: t.vendor_id,
+          vendor_uuid: t.vendor_uuid,
+          vendor_name: t.vendor_name,
+          source: "purchase_term",
+          priority: t.priority,
+          lead_time_days: t.lead_time_days,
+          price: t.price && Decimal.to_string(t.price),
+          currency_code: t.currency_code,
+          vendor_part_no: t.vendor_part_no,
+          min_quantity: t.min_quantity && Decimal.to_string(t.min_quantity),
+          last_paid_price: hist && hist.unit_price && Decimal.to_string(hist.unit_price),
+          last_paid_currency: hist && hist.currency_code,
+          last_paid_at: hist && hist.last_paid_at
+        }
+        |> Map.put(:item_id, t.item_id)
+      end)
+
+    approved_rows =
+      approved
+      |> Enum.reject(fn a -> MapSet.member?(term_keys, {a.item_id, a.vendor_id}) end)
+      |> Enum.map(fn a ->
+        hist = Map.get(price_history, {a.item_id, a.vendor_id})
+
+        %{
+          vendor_id: a.vendor_id,
+          vendor_uuid: a.vendor_uuid,
+          vendor_name: a.vendor_name,
+          # ``source`` lets the FE badge "approved only — no commercial
+          # baseline yet" vs the typical "primary vendor" chip.
+          source: "approved",
+          # Approved-only rows sort below every term row. Picking a
+          # value past the realistic term-priority range keeps the
+          # sort stable without a secondary tiebreaker.
+          priority: 9999,
+          lead_time_days: nil,
+          price: nil,
+          currency_code: nil,
+          vendor_part_no: nil,
+          min_quantity: nil,
+          last_paid_price: hist && hist.unit_price && Decimal.to_string(hist.unit_price),
+          last_paid_currency: hist && hist.currency_code,
+          last_paid_at: hist && hist.last_paid_at
+        }
+        |> Map.put(:item_id, a.item_id)
+      end)
+
+    (term_rows ++ approved_rows)
+    |> Enum.group_by(& &1.item_id)
+    |> Map.new(fn {item_id, rows} ->
+      sorted =
+        rows
+        |> Enum.sort_by(fn r -> {r.priority, r.vendor_name} end)
+        |> Enum.map(&Map.delete(&1, :item_id))
+
+      {item_id, sorted}
+    end)
+  end
+
+  # ──────────────────────────────────────────────────────────────────
+  # Project (formulation) resolution
+  # ──────────────────────────────────────────────────────────────────
+  #
+  # Walk each dependent MO up to its root and resolve the root's
+  # customer order → ``npd_formulation_uuid`` + finished-product name.
+  # Sub-stage MOs don't carry the CO line themselves; the root does.
+  #
+  # One batched query loads every open MO's (id, parent_mo_id,
+  # customer_order_line_id) into memory, then a single CO lookup
+  # resolves names + uuids. Walk is capped at the same depth the
+  # production cascade uses (@max_cascade_depth = 25) so a malformed
+  # cycle can't spin.
+  @max_project_walk 25
+  defp resolve_mo_projects(_company_id, []), do: %{}
+
+  defp resolve_mo_projects(company_id, mo_ids) do
+    mo_ids = Enum.uniq(mo_ids)
+
+    all_mos =
+      from(mo in ManufacturingOrder,
+        where: mo.company_id == ^company_id,
+        select: %{id: mo.id, parent_mo_id: mo.parent_mo_id, col_id: mo.customer_order_line_id}
+      )
+      |> Repo.all()
+      |> Map.new(&{&1.id, &1})
+
+    # Resolve each mo_id → root col_id (walk parent_mo_id until nil
+    # or the depth cap).
+    root_col_by_mo =
+      mo_ids
+      |> Enum.map(fn mo_id ->
+        {mo_id, walk_to_root_col(mo_id, all_mos, @max_project_walk)}
+      end)
+      |> Map.new()
+
+    col_ids =
+      root_col_by_mo
+      |> Map.values()
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    projects_by_col =
+      case col_ids do
+        [] ->
+          %{}
+
+        ids ->
+          from(col in CustomerOrderLine,
+            join: co in CustomerOrder, on: co.id == col.customer_order_id,
+            left_join: i in Item, on: i.id == col.item_id,
+            where: col.id in ^ids,
+            select: %{
+              col_id: col.id,
+              formulation_uuid: co.npd_formulation_uuid,
+              formulation_name: i.name
+            }
+          )
+          |> Repo.all()
+          |> Map.new(fn r ->
+            {r.col_id,
+             %{formulation_uuid: r.formulation_uuid && to_string(r.formulation_uuid), formulation_name: r.formulation_name}}
+          end)
+      end
+
+    Map.new(root_col_by_mo, fn
+      {mo_id, nil} -> {mo_id, %{formulation_uuid: nil, formulation_name: nil}}
+      {mo_id, col_id} -> {mo_id, Map.get(projects_by_col, col_id, %{formulation_uuid: nil, formulation_name: nil})}
+    end)
+  end
+
+  defp walk_to_root_col(mo_id, mos, depth_left) do
+    case Map.get(mos, mo_id) do
+      nil -> nil
+      %{col_id: col_id, parent_mo_id: nil} -> col_id
+      _ when depth_left <= 0 -> nil
+      %{parent_mo_id: parent_id} -> walk_to_root_col(parent_id, mos, depth_left - 1)
+    end
+  end
+
+  @doc """
+  Distinct projects currently touched by open-MO shortages. Powers the
+  procurement shortage page's project filter combobox. One row per
+  formulation (dedup'd across all CO lines pointing at the same
+  ``npd_formulation_uuid``), sorted by name.
+  """
+  def list_projects(company_id) when is_integer(company_id) do
+    from(mo in ManufacturingOrder,
+      join: col in CustomerOrderLine, on: col.id == mo.customer_order_line_id,
+      join: co in CustomerOrder, on: co.id == col.customer_order_id,
+      left_join: i in Item, on: i.id == col.item_id,
+      where:
+        mo.company_id == ^company_id and
+          mo.status in ^@open_mo_statuses and
+          not is_nil(co.npd_formulation_uuid),
+      distinct: co.npd_formulation_uuid,
+      select: %{formulation_uuid: co.npd_formulation_uuid, formulation_name: i.name}
+    )
+    |> Repo.all()
+    |> Enum.map(fn r -> %{formulation_uuid: to_string(r.formulation_uuid), formulation_name: r.formulation_name} end)
+    |> Enum.sort_by(& &1.formulation_name || "")
   end
 end

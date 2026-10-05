@@ -23,6 +23,13 @@ interface SearchParams {
    *  ticks the ``For R&D`` checkbox so the resulting PO's lots
    *  inherit ``is_rnd = true``. */
   is_rnd?: string;
+  /** Base64-URL-encoded JSON array of ``{item_uuid, qty}``. Shortages
+   *  → "Create PO for this vendor" cluster action deep-links here so
+   *  every short item for the chosen vendor seeds the form in one
+   *  shot. Keeps the single-item ``item_uuid`` + ``qty`` prefill in
+   *  place for backwards compat with the per-row Create PO button
+   *  and the my-tasks reorder link. */
+  prefill?: string;
 }
 
 export default async function NewPOPage({
@@ -38,7 +45,37 @@ export default async function NewPOPage({
   // Deep-link prefill from the shortages page + my-tasks reorder
   // tasks — read on the server so the form mounts with the prefill
   // in its initial state, no post-mount fetch + insert dance required.
-  const { item_uuid, qty, vendor_id, is_rnd } = await searchParams;
+  const { item_uuid, qty, vendor_id, is_rnd, prefill } = await searchParams;
+
+  // Decode the bulk-prefill blob. Base64url over JSON keeps the URL
+  // compact for a vendor cluster of ~10-20 lines (well under any
+  // browser or CDN URL cap) while still being plain text — a buyer
+  // can eyeball the decoded array in DevTools before submitting.
+  const prefillLines: Array<{ item_uuid: string; qty: string | null }> | null =
+    (() => {
+      if (!prefill) return null;
+      try {
+        const padded = prefill.replace(/-/g, "+").replace(/_/g, "/");
+        const padLen = (4 - (padded.length % 4)) % 4;
+        const decoded = Buffer.from(
+          padded + "=".repeat(padLen),
+          "base64",
+        ).toString("utf-8");
+        const parsed = JSON.parse(decoded);
+        if (!Array.isArray(parsed)) return null;
+        const clean = parsed
+          .filter(
+            (r): r is { item_uuid: string; qty?: string | null } =>
+              r &&
+              typeof r === "object" &&
+              typeof r.item_uuid === "string",
+          )
+          .map((r) => ({ item_uuid: r.item_uuid, qty: r.qty ?? null }));
+        return clean.length > 0 ? clean : null;
+      } catch {
+        return null;
+      }
+    })();
 
   // Eager vendor + item + warehouse fetches dropped — the form's
   // pickers hit /api/vendors?search&limit=50 etc. on demand, so the
@@ -85,6 +122,7 @@ export default async function NewPOPage({
             prefillQty={qty ?? null}
             prefillVendorId={vendor_id ?? null}
             prefillIsRnd={is_rnd === "1" || is_rnd === "true"}
+            prefillLines={prefillLines}
           />
         </div>
       </main>

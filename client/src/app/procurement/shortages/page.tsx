@@ -5,10 +5,13 @@ import { hasPermission } from "@/lib/rbac";
 import { TopBar } from "@/components/layout/top-bar";
 import { PageHeader } from "@/components/layout/page-header";
 import { PresenceMount } from "@/components/realtime/presence-mount";
-import { getProcurementShortages } from "@/lib/procurement-shortages/server";
+import {
+  getProcurementShortages,
+  getShortageProjects,
+} from "@/lib/procurement-shortages/server";
 import { getCompanyDefaults } from "@/lib/company/server";
 import { ProcurementSubnav } from "../procurement-subnav";
-import { ShortagesTable } from "./shortages-table";
+import { ShortagesWorkspace } from "./shortages-workspace";
 
 export const metadata = { title: "Shortages · Procurement · PSP" };
 export const dynamic = "force-dynamic";
@@ -19,8 +22,9 @@ export default async function ProcurementShortagesPage() {
     redirect("/settings/profile");
   }
 
-  const [data, company] = await Promise.all([
+  const [data, projects, company] = await Promise.all([
     getProcurementShortages(),
+    getShortageProjects(),
     getCompanyDefaults(),
   ]);
 
@@ -40,11 +44,12 @@ export default async function ProcurementShortagesPage() {
           <PageHeader
             icon={FileText}
             title="Shortages"
-            description="Every raw-material and packaging item still short across open manufacturing orders, after subtracting existing bookings and qty already on open POs. Sort by any column, filter by item type or PO status, search by item name."
+            description="Every raw-material and packaging item still short across open manufacturing orders, after subtracting existing bookings and qty already on open POs. Toggle between the flat list, a vendor-grouped view (one PO per cluster), or a project-scoped view to raise purchases for a single product."
           />
 
-          <ShortagesTable
+          <ShortagesWorkspace
             initialPage={initialPage}
+            projects={projects?.projects ?? []}
             companyDateFormat={company}
           />
         </div>

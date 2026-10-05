@@ -192,6 +192,14 @@ interface NewPOFormProps {
    *  so received lots inherit ``is_rnd = true`` and the booking
    *  guard on trial MOs stays satisfied. */
   prefillIsRnd?: boolean;
+  /** Bulk prefill from the shortages page's "Create PO for this
+   *  vendor" cluster action. Each entry seeds one PO line via the
+   *  same ``addLineWithItem`` path as the single-item prefill, so
+   *  the form opens with every short item for the chosen vendor
+   *  already filled in — buyer only has to confirm quantities and
+   *  sign. Falls back to the single ``prefillItemUuid`` /
+   *  ``prefillQty`` pair when nil / empty. */
+  prefillLines?: Array<{ item_uuid: string; qty: string | null }> | null;
 }
 
 export function NewPOForm({
@@ -199,6 +207,7 @@ export function NewPOForm({
   prefillQty = null,
   prefillVendorId = null,
   prefillIsRnd = false,
+  prefillLines = null,
 }: NewPOFormProps = {}) {
   const router = useRouter();
   const prefillAppliedRef = useRef(false);
@@ -564,6 +573,57 @@ export function NewPOForm({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefillItemUuid]);
+
+  // ── Bulk prefill (shortages → "Create PO for this vendor") ──────
+  // One fetch per line (keeps the existing single-fetch pattern) —
+  // operator-triggered path, N is small (≤ catalogue size), and
+  // sequential is fine. StrictMode double-mount is handled by the
+  // same ``prefillAppliedRef`` guard the single-item branch uses so
+  // a dev-only remount can't duplicate the lines.
+  useEffect(() => {
+    if (!prefillLines || prefillLines.length === 0) return;
+    if (prefillAppliedRef.current) return;
+
+    let cancelled = false;
+    const controller = new AbortController();
+
+    (async () => {
+      try {
+        for (const row of prefillLines) {
+          if (cancelled) return;
+          const res = await fetch(
+            `/api/items/${encodeURIComponent(row.item_uuid)}`,
+            { signal: controller.signal, cache: "no-store" },
+          );
+          if (!res.ok) continue;
+          const body = (await res.json()) as {
+            item?: {
+              id: number;
+              uuid: string;
+              name: string;
+              code?: string | null;
+              external_sku?: string | null;
+            };
+          };
+          if (cancelled) return;
+          if (!body?.item) continue;
+          addLineWithItem(
+            itemRowToOption(body.item),
+            trimDecimalZeros(row.qty ?? ""),
+          );
+        }
+        if (!cancelled) prefillAppliedRef.current = true;
+      } catch {
+        /* aborted — StrictMode remount will retry */
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillLines]);
 
   // ── Shortage suggestions panel ──────────────────────────────────
   // One fetch on mount of the procurement-side shortages list.

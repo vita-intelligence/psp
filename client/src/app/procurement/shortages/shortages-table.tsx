@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
-import { AlertTriangle, ExternalLink, ShoppingCart } from "lucide-react";
+import { AlertTriangle, ExternalLink, ShoppingCart, Store } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import type {
   ColumnFilterValue,
@@ -23,6 +23,11 @@ import type { ShortageRow } from "@/lib/procurement-shortages/server";
 interface Props {
   initialPage: PageResult<ShortageRow>;
   companyDateFormat: FormatPrefs | null;
+  /** Optional project filter (NPD formulation uuid). When set, the
+   *  table restricts to shortage rows whose dependent MOs touch this
+   *  formulation. Threaded through to the backend as
+   *  ``formulation_uuid`` so pagination + totals agree. */
+  formulationUuid?: string | null;
 }
 
 const FILTERS: FilterDef[] = [
@@ -46,14 +51,17 @@ const FILTERS: FilterDef[] = [
 
 const DEFAULT_SORT: SortSpec = { field: "shortage_qty", direction: "desc" };
 
-async function fetchShortagesPage(params: {
-  cursor: string | null;
-  limit: number;
-  sort: SortSpec | null;
-  filters: Record<string, string | boolean | number>;
-  columnFilters: Record<string, ColumnFilterValue>;
-  search: string;
-}): Promise<PageResult<ShortageRow>> {
+async function fetchShortagesPage(
+  params: {
+    cursor: string | null;
+    limit: number;
+    sort: SortSpec | null;
+    filters: Record<string, string | boolean | number>;
+    columnFilters: Record<string, ColumnFilterValue>;
+    search: string;
+  },
+  formulationUuid: string | null,
+): Promise<PageResult<ShortageRow>> {
   const qs = new URLSearchParams();
   qs.set("limit", String(params.limit));
   if (params.cursor) qs.set("cursor", params.cursor);
@@ -63,6 +71,7 @@ async function fetchShortagesPage(params: {
   for (const [k, v] of Object.entries(params.filters)) {
     qs.set(`filter[${k}]`, String(v));
   }
+  if (formulationUuid) qs.set("formulation_uuid", formulationUuid);
   serializeColumnFilters(qs, params.columnFilters);
 
   const res = await fetch(
@@ -82,7 +91,11 @@ async function fetchShortagesPage(params: {
   return (await res.json()) as PageResult<ShortageRow>;
 }
 
-export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
+export function ShortagesTable({
+  initialPage,
+  companyDateFormat,
+  formulationUuid = null,
+}: Props) {
   const columns = useMemo<DataTableColumn<ShortageRow>[]>(() => {
     function uomOf(r: ShortageRow): string {
       // Prefer the UoM every contributing BOM line actually stores
@@ -374,6 +387,86 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
         ),
       },
       {
+        id: "vendor",
+        header: "Vendor",
+        widthClassName: "w-56",
+        group: "Identity",
+        description:
+          "Primary supplier for this item — resolved from vendor purchase terms (ranked by priority) with vendor_approved_items as a fallback. Alternates listed below.",
+        cell: (r) => {
+          const cands = r.vendor_candidates ?? [];
+          if (cands.length === 0) {
+            return (
+              <span
+                className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300"
+                title="No vendor approved for this item yet — add one in Vendors → Approved items before raising a PO."
+              >
+                <AlertTriangle className="size-2.5" />
+                No vendor
+              </span>
+            );
+          }
+          const primary = cands[0];
+          const alternates = cands.slice(1, 3);
+          const overflow = cands.length - 1 - alternates.length;
+          return (
+            <div className="min-w-0 space-y-1">
+              <Link
+                href={`/vendors/${encodeURIComponent(primary.vendor_uuid)}`}
+                onClick={(e) => e.stopPropagation()}
+                className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium hover:bg-muted/70"
+                title={
+                  primary.source === "purchase_term"
+                    ? `Primary vendor (purchase-term priority ${primary.priority})`
+                    : "Approved vendor — no commercial baseline yet"
+                }
+              >
+                <Store className="size-2.5 text-muted-foreground" />
+                <span className="truncate">{primary.vendor_name}</span>
+                {primary.source === "approved" && (
+                  <span className="shrink-0 rounded-full border border-dashed border-amber-500/40 px-1 text-[9px] uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                    approved
+                  </span>
+                )}
+              </Link>
+              {(primary.lead_time_days != null || primary.price != null) && (
+                <p className="text-[10px] text-muted-foreground">
+                  {primary.lead_time_days != null
+                    ? `${primary.lead_time_days}d lead`
+                    : null}
+                  {primary.lead_time_days != null && primary.price != null
+                    ? " · "
+                    : ""}
+                  {primary.price != null
+                    ? `${primary.currency_code ?? ""} ${primary.price}`.trim()
+                    : null}
+                </p>
+              )}
+              {alternates.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1">
+                  {alternates.map((v) => (
+                    <Link
+                      key={v.vendor_id}
+                      href={`/vendors/${encodeURIComponent(v.vendor_uuid)}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="truncate rounded-md border border-border/40 px-1 text-[10px] text-muted-foreground hover:bg-muted"
+                      title={`Alternate (${v.source === "purchase_term" ? `priority ${v.priority}` : "approved"})`}
+                    >
+                      {v.vendor_name}
+                    </Link>
+                  ))}
+                  {overflow > 0 && (
+                    <span className="text-[10px] text-muted-foreground">
+                      +{overflow}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        },
+      },
+      {
         id: "earliest_planned",
         header: "Earliest need",
         filterField: "earliest_planned",
@@ -444,13 +537,19 @@ export function ShortagesTable({ initialPage, companyDateFormat }: Props) {
     ];
   }, [companyDateFormat]);
 
+  const fetchPage = useMemo(
+    () => (params: Parameters<typeof fetchShortagesPage>[0]) =>
+      fetchShortagesPage(params, formulationUuid),
+    [formulationUuid],
+  );
+
   return (
     <DataTable<ShortageRow>
       tableId="procurement-shortages"
       realtimeEntity="shortage"
       columns={columns}
       rowKey={(r) => String(r.item?.id ?? r.item?.uuid ?? r.shortage_qty)}
-      fetchPage={fetchShortagesPage}
+      fetchPage={fetchPage}
       initialPage={initialPage}
       defaultSort={DEFAULT_SORT}
       filters={FILTERS}

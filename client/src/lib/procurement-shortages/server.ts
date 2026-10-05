@@ -11,6 +11,45 @@ export interface ShortageDependentMo {
   quantity: string;
   item_name: string;
   planned_start: string | null;
+  /** NPD formulation uuid resolved via the root MO's customer order.
+   *  Stable project identity — same uuid the CFF formulation page
+   *  uses. Null when this MO (or its root) has no customer order
+   *  attached (trial batch without a payment, legacy MO). */
+  formulation_uuid: string | null;
+  /** Human label for the project (customer order line's finished-
+   *  product name). Falls back to null when there's no CO line. */
+  formulation_name: string | null;
+}
+
+/** A vendor that CAN ship this item today. Ranked list is returned
+ *  sorted strongest-signal-first — ``source === "purchase_term"``
+ *  rows (ordered by their ``priority``) always precede ``"approved"``
+ *  rows. The first entry is the "primary vendor" we badge on the row.
+ *
+ *  See ``Backend.Procurement.Shortages.compute_vendor_candidates/2``.
+ */
+export interface ShortageVendorCandidate {
+  vendor_id: number;
+  vendor_uuid: string;
+  vendor_name: string;
+  /** Which table surfaced this candidate.
+   *   * ``purchase_term`` — explicit commercial baseline (strongest).
+   *   * ``approved`` — supplier approved to ship but no term yet. */
+  source: "purchase_term" | "approved";
+  /** Term priority (1 = primary vendor). Approved-only rows get a
+   *  sentinel ``9999`` so they sort below every term. */
+  priority: number;
+  lead_time_days: number | null;
+  /** Term unit price. Null on approved-only rows. */
+  price: string | null;
+  currency_code: string | null;
+  vendor_part_no: string | null;
+  min_quantity: string | null;
+  /** Last-paid price per vendor_item_prices. Null when no PO has
+   *  landed on this (item, vendor) pair yet. */
+  last_paid_price: string | null;
+  last_paid_currency: string | null;
+  last_paid_at: string | null;
 }
 
 export interface ShortageRow {
@@ -46,11 +85,26 @@ export interface ShortageRow {
    *  "book from stock" rather than raise a fresh PO. */
   explicit_request: boolean;
   dependent_mos: ShortageDependentMo[];
+  /** Ranked vendor candidates — see :class:`ShortageVendorCandidate`.
+   *  Empty when the item has no purchase terms + no approved
+   *  vendors (orphan — buyer picks manually). */
+  vendor_candidates: ShortageVendorCandidate[];
 }
 
 export interface ShortagesResponse {
   items: ShortageRow[];
   next_cursor: string | null;
+}
+
+export interface ShortageProject {
+  /** NPD formulation uuid — stable key the FE filters on. */
+  formulation_uuid: string;
+  /** Human label (customer-order-line's finished-product name). */
+  formulation_name: string | null;
+}
+
+export interface ShortageProjectsResponse {
+  projects: ShortageProject[];
 }
 
 export async function getProcurementShortages(): Promise<ShortagesResponse | null> {
@@ -59,6 +113,19 @@ export async function getProcurementShortages(): Promise<ShortagesResponse | nul
   try {
     return await api<ShortagesResponse>(
       "/api/procurement/shortages?limit=50&sort=shortage_qty:desc",
+      { token, cache: "no-store" },
+    );
+  } catch {
+    return null;
+  }
+}
+
+export async function getShortageProjects(): Promise<ShortageProjectsResponse | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  try {
+    return await api<ShortageProjectsResponse>(
+      "/api/procurement/shortages/projects",
       { token, cache: "no-store" },
     );
   } catch {
