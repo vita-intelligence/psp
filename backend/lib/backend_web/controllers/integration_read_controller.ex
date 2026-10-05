@@ -1035,6 +1035,25 @@ defmodule BackendWeb.IntegrationReadController do
   * `use_as=flavouring` — exact match against `attributes.use_as`.
     Used by NPD's ingredient pickers, which pre-filter items by
     category (flavouring / colour / gummy_base / …).
+  * `limit=50` — page size. Default `@items_default_limit`, hard-
+    capped at `@items_max_limit` so a mis-set caller can't ask for
+    the whole catalogue in one round-trip (the un-paginated shape
+    saturated Django workers at ~5 s per 1.5 k rows).
+  * `cursor=<opaque>` — resume from where the previous page ended.
+    Opaque base64url of the last page's `(name, id)` tuple; the
+    caller must round-trip the value verbatim.
+
+  Response:
+
+      {
+        "items": [...],
+        "next_cursor": "..." | null
+      }
+
+  `next_cursor` is `null` on the last page; otherwise pass it back
+  as `?cursor=` to fetch the next slice. The ordering is stable
+  (`name ASC, id ASC`), so a row inserted / renamed between pages
+  cannot appear twice or be skipped past the already-seen prefix.
 
   Response fields on each row:
 
@@ -1048,6 +1067,9 @@ defmodule BackendWeb.IntegrationReadController do
     row on it. Callers render "no PSP price" the same way they
     handle a missing item.
   """
+  @items_default_limit 50
+  @items_max_limit 200
+
   def list_items(conn, params) do
     company_id = conn.assigns.current_company_id
 
@@ -1088,16 +1110,14 @@ defmodule BackendWeb.IntegrationReadController do
           nil
       end
 
+    limit = parse_items_limit(params["limit"])
+    cursor = decode_items_cursor(params["cursor"])
+
     base =
       from i in Item,
         left_join: pf in assoc(i, :product_family),
         where: i.company_id == ^company_id and i.is_active == true,
-        order_by: i.name,
-        # Preload the raw-material compliance side-table so the
-        # shape helper can pull ``use_as`` from there when it's
-        # not on ``attributes``. Items with no compliance row
-        # (packaging, equipment, ...) come back with a nil assoc,
-        # handled explicitly downstream.
+        order_by: [asc: i.name, asc: i.id],
         preload: [:raw_material_compliance, product_family: pf]
 
     query =
@@ -1105,14 +1125,78 @@ defmodule BackendWeb.IntegrationReadController do
       |> maybe_filter_item_types(types)
       |> maybe_filter_search(search)
       |> maybe_filter_use_as(use_as_list)
+      |> apply_items_cursor(cursor)
+      # Over-fetch one row so we can tell whether more pages exist
+      # without a second COUNT query — standard keyset trick.
+      |> limit(^(limit + 1))
 
-    items = Repo.all(query)
-    prices = load_prices(company_id, items)
+    rows = Repo.all(query)
+    {page_rows, next_cursor} = split_items_page(rows, limit)
+    prices = load_prices(company_id, page_rows)
     company = Repo.get!(Company, company_id)
 
     json(conn, %{
-      items: Enum.map(items, &integration_item_shape(&1, prices, company))
+      items: Enum.map(page_rows, &integration_item_shape(&1, prices, company)),
+      next_cursor: next_cursor
     })
+  end
+
+  defp parse_items_limit(nil), do: @items_default_limit
+  defp parse_items_limit(""), do: @items_default_limit
+
+  defp parse_items_limit(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, ""} when n > 0 -> min(n, @items_max_limit)
+      _ -> @items_default_limit
+    end
+  end
+
+  defp parse_items_limit(_), do: @items_default_limit
+
+  # The cursor is opaque to callers so we can change its shape
+  # later without breaking the public contract. Current shape is
+  # ``"<name><id>"`` (ASCII unit-separator is a safe field
+  # delimiter that cannot appear in a sanitised item name), base64-
+  # url encoded without padding so it round-trips in a URL without
+  # extra escaping.
+  defp decode_items_cursor(nil), do: nil
+  defp decode_items_cursor(""), do: nil
+
+  defp decode_items_cursor(s) when is_binary(s) do
+    with {:ok, decoded} <- Base.url_decode64(s, padding: false),
+         [name, id_str] <- String.split(decoded, "", parts: 2),
+         {id, ""} <- Integer.parse(id_str) do
+      {name, id}
+    else
+      _ -> nil
+    end
+  end
+
+  defp decode_items_cursor(_), do: nil
+
+  defp encode_items_cursor(name, id) when is_binary(name) and is_integer(id) do
+    Base.url_encode64("#{name}#{id}", padding: false)
+  end
+
+  defp apply_items_cursor(query, nil), do: query
+
+  defp apply_items_cursor(query, {name, id}) do
+    # Keyset "strictly after (name, id)" predicate matches the
+    # ``order_by: [asc: name, asc: id]`` ordering so repeated calls
+    # with the previous page's cursor return the next slice without
+    # overlap or gap, even if ``name`` is non-unique.
+    from i in query,
+      where: i.name > ^name or (i.name == ^name and i.id > ^id)
+  end
+
+  defp split_items_page(rows, limit) do
+    if length(rows) > limit do
+      page = Enum.take(rows, limit)
+      last = List.last(page)
+      {page, encode_items_cursor(last.name, last.id)}
+    else
+      {rows, nil}
+    end
   end
 
   @doc """
