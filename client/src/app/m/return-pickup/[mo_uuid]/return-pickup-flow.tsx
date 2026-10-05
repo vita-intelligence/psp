@@ -61,6 +61,7 @@ import type {
 } from "@/lib/production/types";
 import type { MoveRecommendation } from "@/lib/stock/mobile";
 import { preparePhotoForUpload } from "@/lib/upload/prepare-photo";
+import { DevSkipPhotoButton } from "@/components/dev-skip-photo-button";
 import { UuidScanStep } from "../../pickup/[mo_uuid]/uuid-scan-step";
 import { FloorPlanMini } from "../../lots/[uuid]/move/floor-plan-mini";
 import { LastSeenPhotoCard } from "../../lots/[uuid]/move/last-seen-photo";
@@ -433,6 +434,7 @@ export function ReturnPickupFlow({
           errorDetail={errorDetail}
           onPhotoChange={onPhotoChange}
           onClearPhoto={() => setPhotoUrl(null)}
+          onDevSkip={setPhotoUrl}
           onCancel={backToOverview}
           onConfirm={() => {
             const lot = lotByKey[step.lotKey];
@@ -476,6 +478,7 @@ export function ReturnPickupFlow({
           uploading={photoUploading}
           onPhotoChange={onPhotoChange}
           onClearPhoto={() => setPhotoUrl(null)}
+          onDevSkip={setPhotoUrl}
           onContinue={() =>
             setStep({
               kind: "place_scan_cell",
@@ -930,6 +933,7 @@ function PlaceDirectionsStep({
   uploading,
   onPhotoChange,
   onClearPhoto,
+  onDevSkip,
   onContinue,
   onChooseDifferent,
 }: {
@@ -939,6 +943,7 @@ function PlaceDirectionsStep({
   uploading: boolean;
   onPhotoChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onClearPhoto: () => void;
+  onDevSkip: (url: string) => void;
   onContinue: () => void;
   onChooseDifferent: () => void;
 }) {
@@ -1043,6 +1048,7 @@ function PlaceDirectionsStep({
                 disabled={uploading}
               />
             </label>
+            <DevSkipPhotoButton onSkip={onDevSkip} />
             <p className="text-[11px] text-muted-foreground">
               A photo is required — BRCGS 3.5.1 / FSSC 22000
               traceability.
@@ -1310,6 +1316,7 @@ function PhotoStep({
   errorDetail,
   onPhotoChange,
   onClearPhoto,
+  onDevSkip,
   onCancel,
   onConfirm,
   confirmIcon,
@@ -1323,6 +1330,7 @@ function PhotoStep({
   errorDetail: string | null;
   onPhotoChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onClearPhoto: () => void;
+  onDevSkip: (url: string) => void;
   onCancel: () => void;
   onConfirm: () => void;
   confirmIcon: React.ReactNode;
@@ -1348,22 +1356,25 @@ function PhotoStep({
           </button>
         </div>
       ) : (
-        <label className="flex h-11 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-dashed border-border/60 bg-muted/30 text-sm text-muted-foreground hover:bg-muted">
-          {uploading ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <ImagePlus className="size-4" />
-          )}
-          {uploading ? "Uploading…" : "Take / pick a photo"}
-          <input
-            type="file"
-            accept="image/*"
-            capture="environment"
-            onChange={onPhotoChange}
-            className="hidden"
-            disabled={uploading}
-          />
-        </label>
+        <>
+          <label className="flex h-11 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-dashed border-border/60 bg-muted/30 text-sm text-muted-foreground hover:bg-muted">
+            {uploading ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <ImagePlus className="size-4" />
+            )}
+            {uploading ? "Uploading…" : "Take / pick a photo"}
+            <input
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={onPhotoChange}
+              className="hidden"
+              disabled={uploading}
+            />
+          </label>
+          <DevSkipPhotoButton onSkip={onDevSkip} />
+        </>
       )}
 
       {errorDetail && <ErrorBanner detail={errorDetail} />}

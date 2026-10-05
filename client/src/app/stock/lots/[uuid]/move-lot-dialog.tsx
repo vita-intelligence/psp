@@ -32,6 +32,7 @@ import type {
 import type { ErrorDebug } from "@/lib/errors/types";
 import { moveLotAction } from "@/lib/stock/actions";
 import { preparePhotoForUpload } from "@/lib/upload/prepare-photo";
+import { DevSkipPhotoButton } from "@/components/dev-skip-photo-button";
 
 interface Props {
   lot: StockLot;
@@ -251,21 +252,24 @@ export function MoveLotDialog({ lot, open, onOpenChange }: Props) {
                 </button>
               </div>
             ) : (
-              <label className="flex h-10 cursor-pointer items-center justify-center gap-2 rounded-md border border-border/60 bg-muted/40 text-sm font-medium">
-                {photoUploading ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <Camera className="size-4" />
-                )}
-                {photoUploading ? "Uploading…" : "Attach a photo"}
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  onChange={onPhoto}
-                  className="hidden"
-                  disabled={photoUploading}
-                />
-              </label>
+              <>
+                <label className="flex h-10 cursor-pointer items-center justify-center gap-2 rounded-md border border-border/60 bg-muted/40 text-sm font-medium">
+                  {photoUploading ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Camera className="size-4" />
+                  )}
+                  {photoUploading ? "Uploading…" : "Attach a photo"}
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={onPhoto}
+                    className="hidden"
+                    disabled={photoUploading}
+                  />
+                </label>
+                <DevSkipPhotoButton onSkip={setPhotoUrl} />
+              </>
             )}
 
             {!photoUrl && (

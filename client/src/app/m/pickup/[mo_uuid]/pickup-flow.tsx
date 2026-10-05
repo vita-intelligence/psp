@@ -77,6 +77,7 @@ import type {
 import { UuidScanStep } from "./uuid-scan-step";
 import { FloorPlanMini } from "../../lots/[uuid]/move/floor-plan-mini";
 import { LastSeenPhotoCard } from "../../lots/[uuid]/move/last-seen-photo";
+import { DevSkipPhotoButton } from "@/components/dev-skip-photo-button";
 import type { ManufacturingOrderBookingCellSummary } from "@/lib/production/types";
 
 interface Props {
@@ -1697,6 +1698,11 @@ function PhotoRow({
           </Button>
         )}
       </div>
+      {!photoUrl && (
+        <div className="mt-2">
+          <DevSkipPhotoButton onSkip={onUpload} />
+        </div>
+      )}
     </li>
   );
 }
