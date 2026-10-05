@@ -28,10 +28,16 @@ ARG NEXT_IGNORE_BUILD_ERRORS
 # every mandatory photo capture. Prod never sets it so the JSX
 # tree-shakes out via ``shouldRenderDevSkip``.
 ARG NEXT_PUBLIC_ALLOW_DEV_SKIP
+# Sandbox-only — client mirror of ``Backend.FourEyes`` so pre-emptive
+# UI gates (disabled Approve button, "a different user must sign" banners)
+# follow the backend's env toggle. Prod leaves it unset → defaults to
+# strict enforcement. See client/src/lib/four-eyes.ts.
+ARG NEXT_PUBLIC_ENFORCE_FOUR_EYES
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
     NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL} \
     NEXT_IGNORE_BUILD_ERRORS=${NEXT_IGNORE_BUILD_ERRORS} \
     NEXT_PUBLIC_ALLOW_DEV_SKIP=${NEXT_PUBLIC_ALLOW_DEV_SKIP} \
+    NEXT_PUBLIC_ENFORCE_FOUR_EYES=${NEXT_PUBLIC_ENFORCE_FOUR_EYES} \
     NEXT_TELEMETRY_DISABLED=1
 
 COPY --from=deps /app/node_modules ./node_modules
