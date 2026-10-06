@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import QrScanner from "qr-scanner";
 import { Camera, ImagePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { shouldRenderDevSkip } from "@/components/dev-skip-photo-button";
 import type { StockLot } from "@/lib/types";
 
 type ScanStatus =
@@ -216,7 +217,7 @@ export function LotScanStep({ expected, onResult, onError, onOverride }: Props) 
           Can&apos;t scan the lot — proceed anyway
         </Button>
 
-        {process.env.NODE_ENV !== "production" && (
+        {shouldRenderDevSkip() && (
           <div className="rounded-lg border border-dashed border-amber-500/40 bg-amber-500/10 px-3 py-2">
             <p className="text-[10px] uppercase tracking-wider text-amber-300">
               Dev bypass

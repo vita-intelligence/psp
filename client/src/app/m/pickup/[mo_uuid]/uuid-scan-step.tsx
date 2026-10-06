@@ -5,6 +5,7 @@ import QrScanner from "qr-scanner";
 import { Camera, FastForward, ImagePlus, Pencil, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { shouldRenderDevSkip } from "@/components/dev-skip-photo-button";
 
 type ScanStatus =
   | { kind: "idle" }
@@ -304,7 +305,7 @@ export function UuidScanStep({
         </Button>
       </div>
 
-      {process.env.NODE_ENV !== "production" && (
+      {shouldRenderDevSkip() && (
         <div className="rounded-lg border border-dashed border-amber-500/40 bg-amber-500/10 px-3 py-2">
           <p className="text-[10px] uppercase tracking-wider text-amber-700 dark:text-amber-300">
             Dev bypass

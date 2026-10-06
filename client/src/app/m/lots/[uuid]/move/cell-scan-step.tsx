@@ -5,6 +5,7 @@ import QrScanner from "qr-scanner";
 import { AlertTriangle, Camera, Check, ImagePlus, Pencil, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { shouldRenderDevSkip } from "@/components/dev-skip-photo-button";
 import type { ScannedCell } from "@/lib/types";
 
 type ScanStatus =
@@ -281,7 +282,7 @@ export function CellScanStep({ onResult, onError, expected }: Props) {
           so the move flow can roll through without a physical QR.
           Hidden in production builds. Only available when an expected
           cell is set (otherwise there's nothing to bypass to). */}
-      {process.env.NODE_ENV !== "production" && expected && !overriding && (
+      {shouldRenderDevSkip() && expected && !overriding && (
         <div className="z-10 border-t border-amber-500/30 bg-amber-500/15 px-4 py-2">
           <div className="flex items-center justify-between gap-2">
             <p className="text-[11px] text-amber-100">
