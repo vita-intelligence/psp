@@ -29,6 +29,14 @@ import { listInvoicesForPO } from "@/lib/invoices/server";
 
 export const metadata = { title: "PO · Procurement · PSP" };
 
+// Force per-request rendering so ``router.refresh()`` after an approve
+// / cancel / mark-ordered action actually re-runs this server
+// component instead of serving a stale Router Cache payload. The
+// backend fetch is already ``cache: "no-store"`` — this just closes
+// the client-cache gap so a signed PO shows its new status without a
+// manual browser reload.
+export const dynamic = "force-dynamic";
+
 const STATUS_LABEL: Record<PurchaseOrderStatus, string> = {
   draft: "Draft",
   pending_approver: "Pending approver",
