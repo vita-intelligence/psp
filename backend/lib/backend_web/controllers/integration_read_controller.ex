@@ -1667,6 +1667,17 @@ defmodule BackendWeb.IntegrationReadController do
             reputation_score: e.reputation_score,
             employee_number: e.employee_number,
             has_pin: not is_nil(e.kiosk_pin_hash),
+            # Hash itself is shipped so vita-performance can mirror it
+            # into its ``Worker.pin`` column verbatim. Both apps hash
+            # with Django's pbkdf2_sha256 format (PSP via Comeonin on
+            # the create_changeset virtual field; vp via
+            # ``make_password``), so ``check_password(raw, hash)``
+            # works on either side against the same stored string.
+            # One-way hash → safe to transit the integration bus;
+            # vp uses this to let an operator type the PIN they set
+            # on PSP without round-tripping back to PSP for every
+            # workstation login.
+            kiosk_pin_hash: e.kiosk_pin_hash,
             current_hourly_rate:
               case wage do
                 %EmployeeWage{hourly_rate: r} -> to_string(r)
