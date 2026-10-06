@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { Factory, FlaskConical } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import type {
@@ -149,9 +149,21 @@ const STREAM_TABS: Array<{ value: Stream; label: string; hint: string }> = [
 function StreamTabStrip({
   stream,
   hrefFor,
+  onSelect,
 }: {
+  /** The *effective* active tab — may be ``optimisticStream`` while a
+   *  navigation is in-flight. The tab-strip doesn't care about the
+   *  real-vs-optimistic split; it just styles whichever one the parent
+   *  tells it is active. */
   stream: Stream;
   hrefFor: (value: Stream) => string;
+  /** Normal left-click handler. Fires inside ``startTransition`` so
+   *  React can keep the previous UI visible while the next one
+   *  streams in. Returns ``true`` when the click was handled, so the
+   *  Link can skip its own navigation. Modifier clicks (cmd/ctrl/
+   *  shift/middle) fall through to the Link's default behaviour so
+   *  "open in new tab" still works. */
+  onSelect: (next: Stream) => void;
 }) {
   return (
     <div
@@ -162,16 +174,6 @@ function StreamTabStrip({
       {STREAM_TABS.map((t) => {
         const active = t.value === stream;
         return (
-          // Next ``<Link>`` instead of a button + ``router.replace``.
-          // The replace path intermittently refused to re-run the
-          // server component on sandbox even after we added
-          // ``force-dynamic`` + bumped the Router Cache — the operator
-          // was clicking and seeing no visible change. Link navigation
-          // goes through the standard RSC prefetch + commit pipeline,
-          // which does invalidate reliably, and keeps the URL as the
-          // source of truth (so cmd-click to open in a new tab works
-          // too). ``scroll={false}`` so flipping streams doesn't jump
-          // back to the top of the page.
           <Link
             key={t.value}
             href={hrefFor(t.value)}
@@ -180,6 +182,25 @@ function StreamTabStrip({
             title={t.hint}
             scroll={false}
             prefetch={false}
+            onClick={(e) => {
+              // Let the browser handle modifier / middle clicks so
+              // the operator can cmd-click to open the other stream
+              // in a new tab. Only intercept the plain left-click to
+              // run the navigation inside ``startTransition``, which
+              // lets the parent paint the optimistic active tab +
+              // table overlay instantly.
+              if (
+                e.metaKey ||
+                e.ctrlKey ||
+                e.shiftKey ||
+                e.altKey ||
+                e.button !== 0
+              ) {
+                return;
+              }
+              e.preventDefault();
+              onSelect(t.value);
+            }}
             className={cn(
               "cursor-pointer rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
               active
@@ -215,7 +236,34 @@ export function ManufacturingOrdersLedger({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const urlStream = normaliseStream(searchParams.get("stream"));
+
+  // Optimistic active-tab state so a click paints instantly instead of
+  // waiting on the server component to stream. ``optimisticStream`` is
+  // whichever tab the operator clicked most recently; it clears the
+  // moment the real URL catches up (useEffect below). The table reads
+  // from the REAL ``urlStream`` for fetching + rendering so the data
+  // on screen is always honest — only the tab-strip highlight + the
+  // dim overlay react to the optimistic value. ``isPending`` from
+  // useTransition drives the dim overlay so the user has a visual
+  // "something is loading" cue while React finishes the navigation.
+  const [isPending, startTransition] = useTransition();
+  const [optimisticStream, setOptimisticStream] = useState<Stream | null>(null);
   const stream: Stream = urlStream;
+  const displayStream: Stream = optimisticStream ?? urlStream;
+  useEffect(() => {
+    if (optimisticStream && optimisticStream === urlStream) {
+      setOptimisticStream(null);
+    }
+  }, [urlStream, optimisticStream]);
+
+  function selectStream(next: Stream) {
+    if (next === urlStream) return;
+    setOptimisticStream(next);
+    const target = hrefFor(next);
+    startTransition(() => {
+      router.push(target);
+    });
+  }
 
   // Persist last-chosen stream so a bare `/manufacturing-orders` visit
   // lands on it. Skipped when URL already carries a `?stream=` so
@@ -594,8 +642,33 @@ export function ManufacturingOrdersLedger({
 
   return (
     <div className="space-y-3">
-      <StreamTabStrip stream={stream} hrefFor={hrefFor} />
-      <DataTable<ManufacturingOrderSummary>
+      <StreamTabStrip
+        stream={displayStream}
+        hrefFor={hrefFor}
+        onSelect={selectStream}
+      />
+      {/* ``aria-busy`` + opacity dim while the stream navigation is in
+          flight. React keeps the previous table painted during
+          ``startTransition``, so without the overlay the operator sees
+          stale data with no "loading" signal. Opacity + spinner is
+          cheap and keeps the row click-targets stable (users don't
+          lose their place mid-scroll). */}
+      <div
+        className={cn(
+          "relative transition-opacity",
+          isPending && "pointer-events-none opacity-60",
+        )}
+        aria-busy={isPending}
+      >
+        {isPending && (
+          <div
+            className="pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 overflow-hidden rounded-full bg-muted"
+            aria-hidden
+          >
+            <div className="h-full w-1/3 animate-[progress-slide_1.1s_ease-in-out_infinite] bg-foreground/70" />
+          </div>
+        )}
+        <DataTable<ManufacturingOrderSummary>
         // `key` forces a full remount when the stream flips so any
         // in-flight cursors / persisted column filters from the old
         // stream don't leak in.
@@ -650,6 +723,7 @@ export function ManufacturingOrdersLedger({
           </div>
         }
       />
+      </div>
     </div>
   );
 }
