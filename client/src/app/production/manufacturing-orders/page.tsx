@@ -14,6 +14,15 @@ import { ManufacturingOrdersLedger } from "./mos-ledger";
 
 export const metadata = { title: "Manufacturing orders · Production · PSP" };
 
+// Force per-request rendering so flipping the stream tab (which calls
+// ``router.replace`` with a new ``?stream=`` + ``router.refresh``)
+// actually re-runs this server component with the new query param.
+// Without the flag Next.js can serve the previous RSC payload from the
+// Router Cache and the ledger has to recover client-side via its
+// ``fetchPage`` fallback — same single-flight principle we applied on
+// the PO detail page.
+export const dynamic = "force-dynamic";
+
 export default async function ManufacturingOrdersPage({
   searchParams,
 }: {

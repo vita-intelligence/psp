@@ -170,7 +170,11 @@ function StreamTabStrip({
             title={t.hint}
             onClick={() => onChange(t.value)}
             className={cn(
-              "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+              // Tailwind v4 drops the browser-default ``cursor: pointer``
+              // on <button>, so raw buttons read as un-clickable (cursor
+              // stays as the arrow). Add it explicitly so the stream
+              // tabs feel like tabs on hover.
+              "cursor-pointer rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
               active
                 ? "bg-background text-foreground shadow-sm"
                 : "text-muted-foreground hover:text-foreground",

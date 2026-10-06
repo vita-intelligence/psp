@@ -108,6 +108,19 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+
+  /* Tailwind v4 preflight dropped the browser-default
+     ``cursor: pointer`` on buttons + role=button. Operators reported
+     tabs / chips rendered as raw <button> felt un-clickable because
+     the cursor stayed as an arrow on hover. Restore the pre-v4
+     default globally so we don't have to hunt down every raw button
+     and sprinkle ``cursor-pointer`` by hand. Explicit opt-outs
+     (``cursor-default`` / ``disabled``) still win because they come
+     from component-level classes, which apply AFTER this base layer. */
+  button:not(:disabled):not([aria-disabled="true"]),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
 }
 
 /* Indeterminate progress sliding bar — used by DataTable when a
