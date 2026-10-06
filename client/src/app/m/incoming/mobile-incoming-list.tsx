@@ -40,7 +40,7 @@ interface Props {
   warehouses: WarehouseOption[];
 }
 
-type DayFilter = "today" | "tomorrow" | "this_week" | "all";
+type DayFilter = "today" | "tomorrow" | "this_week" | "unknown" | "all";
 
 
 /**
@@ -255,6 +255,14 @@ export function MobileIncomingList({ initialResponse, warehouses }: Props) {
             active={dayFilter === "this_week"}
             onClick={() => setDayFilter("this_week")}
           />
+          {counts.unknown > 0 && (
+            <FilterChip
+              label="ETA unknown"
+              count={counts.unknown}
+              active={dayFilter === "unknown"}
+              onClick={() => setDayFilter("unknown")}
+            />
+          )}
           <FilterChip
             label="All"
             count={response?.items.length ?? 0}
@@ -523,10 +531,20 @@ interface CardBadge {
 }
 
 function computeBadge(
-  expectedIso: string,
+  expectedIso: string | null,
   todayIso: string,
   tomorrowIso: string,
 ): CardBadge {
+  // No vendor-committed ETA yet. Highlight so procurement nudges the
+  // supplier for a date instead of this card quietly aging on the
+  // board — the amber tone matches "Expected today" so an unknown ETA
+  // reads as "needs attention", not "safe to ignore".
+  if (expectedIso === null) {
+    return {
+      label: "ETA unknown",
+      className: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+    };
+  }
   if (expectedIso < todayIso) {
     return {
       label: "Overdue",
@@ -563,6 +581,11 @@ interface DayCounts {
   today: number;
   tomorrow: number;
   thisWeek: number;
+  /** POs with no ``expected_delivery_date`` on the header. The backend
+   *  surfaces them under the reserved ``"unknown"`` key in ``by_day``
+   *  so procurement sees orders that still need an ETA chased from
+   *  the vendor instead of silently disappearing from the board. */
+  unknown: number;
 }
 
 function computeCounts(
@@ -573,14 +596,19 @@ function computeCounts(
   let today = 0;
   let tomorrow = 0;
   let thisWeek = 0;
+  let unknown = 0;
   const weekEnd = isoOffset(todayIso, 7);
   for (const r of rows) {
     const d = r.purchase_order.expected_delivery_date;
+    if (!d) {
+      unknown += 1;
+      continue;
+    }
     if (d === todayIso) today += 1;
     if (d === tomorrowIso) tomorrow += 1;
     if (d >= todayIso && d <= weekEnd) thisWeek += 1;
   }
-  return { today, tomorrow, thisWeek };
+  return { today, tomorrow, thisWeek, unknown };
 }
 
 function matchesDayFilter(
@@ -591,6 +619,11 @@ function matchesDayFilter(
 ): boolean {
   const d = row.purchase_order.expected_delivery_date;
   if (filter === "all") return true;
+  if (filter === "unknown") return d === null;
+  // Dated-only filters below. A row with no ETA definitionally doesn't
+  // match any day-based bucket, so bail early rather than fall through
+  // to a string comparison against a nullable value.
+  if (d === null) return false;
   if (filter === "today") {
     // Today bucket also surfaces overdue POs so the operator never
     // forgets a delivery that should already have landed.

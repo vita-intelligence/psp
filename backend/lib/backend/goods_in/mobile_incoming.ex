@@ -60,12 +60,23 @@ defmodule Backend.GoodsIn.MobileIncoming do
     warehouse_id = parse_warehouse_id(opts[:warehouse_id])
     include_overdue? = Keyword.get(opts, :include_overdue?, true)
 
+    # ETA-less POs are kept in the result set (``is_nil(expected_delivery_date)``
+    # OR within the horizon) so the operator sees orders that are
+    # physically out there but whose supplier hasn't given us a date yet.
+    # The FE buckets them under a dedicated "ETA unknown" header pinned
+    # BELOW the overdue + dated rows — they still need to be received,
+    # procurement still needs to chase the vendor for a date, and they
+    # mustn't vanish from the board just because a field is blank.
     base =
       from(p in PurchaseOrder,
         where: p.company_id == ^company_id,
         where: p.status in ^@open_statuses,
-        where: not is_nil(p.expected_delivery_date),
-        where: p.expected_delivery_date <= ^horizon,
+        where:
+          is_nil(p.expected_delivery_date) or
+            p.expected_delivery_date <= ^horizon,
+        # Dated rows sort by date; dateless rows (NULL) land at the end
+        # thanks to Postgres' default NULLS LAST on ASC. Secondary
+        # ``id`` tiebreak keeps the order deterministic.
         order_by: [asc: p.expected_delivery_date, asc: p.id],
         preload: [
           :vendor,
@@ -116,7 +127,14 @@ defmodule Backend.GoodsIn.MobileIncoming do
   defp maybe_overdue_filter(query, _today, true), do: query
 
   defp maybe_overdue_filter(query, today, false) do
-    where(query, [p], p.expected_delivery_date >= ^today)
+    # ``is_nil`` branch keeps dateless POs visible when the operator
+    # opts out of overdue: without a date they definitionally can't
+    # BE overdue, so filtering them out would be wrong.
+    where(
+      query,
+      [p],
+      is_nil(p.expected_delivery_date) or p.expected_delivery_date >= ^today
+    )
   end
 
   # One follow-up query for the open inspection (status ∈ draft|submitted)
@@ -160,9 +178,20 @@ defmodule Backend.GoodsIn.MobileIncoming do
   end
 
   defp shape_response(triples) do
+    # ``by_day`` is the FE's chip-count map ("today: 3, tomorrow: 1, …").
+    # Dated POs contribute an ISO-8601 key; dateless POs contribute to a
+    # reserved ``"unknown"`` bucket so the FE can render a dedicated
+    # "ETA unknown" filter chip + section without walking the items
+    # list again. ``"unknown"`` isn't a valid ISO date so it can't
+    # collide with a real day key.
     by_day =
       Enum.reduce(triples, %{}, fn {po, _insp, _counts}, acc ->
-        key = Date.to_iso8601(po.expected_delivery_date)
+        key =
+          case po.expected_delivery_date do
+            nil -> "unknown"
+            d -> Date.to_iso8601(d)
+          end
+
         Map.update(acc, key, 1, &(&1 + 1))
       end)
 

@@ -29,7 +29,10 @@ export interface MobileIncomingPo {
   uuid: string;
   code: string | null;
   status: "ordered" | "partially_received";
-  expected_delivery_date: string;
+  /** Vendor-promised ETA. ``null`` when the supplier hasn't given us
+   *  a date yet — the FE buckets these under the "ETA unknown" chip
+   *  so procurement sees orders that still need an ETA chased. */
+  expected_delivery_date: string | null;
   delivery_address: string | null;
   notes: string | null;
   vendor: {
@@ -77,7 +80,9 @@ export interface MobileIncomingRow {
 export interface MobileIncomingResponse {
   items: MobileIncomingRow[];
   /** ISO date → count. Drives the day-chip badges + summary line at
-   *  the top of the mobile list. */
+   *  the top of the mobile list. The reserved key ``"unknown"``
+   *  counts POs with no ``expected_delivery_date`` so the FE can
+   *  render the "ETA unknown" chip without re-walking ``items``. */
   by_day: Record<string, number>;
 }
 
