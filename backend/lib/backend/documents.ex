@@ -22,11 +22,22 @@ defmodule Backend.Documents do
   alias Backend.Numbering
   alias Backend.Purchasing.PurchaseOrder
 
-  @templates_dir Path.join([
-                   :code.priv_dir(:backend) |> to_string(),
-                   "templates",
-                   "documents"
-                 ])
+  # Resolved at RUNTIME (not as a module attribute) because the mix-
+  # release Docker image stashes ``priv`` under
+  # ``/app/lib/backend-0.1.0/priv/...`` while the builder stage's
+  # ``_build/prod/lib/backend/priv/...`` tree is discarded. A compile-
+  # time attribute bakes in the builder path and ``EEx.eval_file``
+  # raises ``File.Error — no such file or directory`` the moment a
+  # PDF is requested in prod. Function form resolves against whichever
+  # priv dir ``:code.priv_dir/1`` points at for the current layout —
+  # mix build during dev, release layout in the deployed container.
+  defp templates_dir do
+    Path.join([
+      :code.priv_dir(:backend) |> to_string(),
+      "templates",
+      "documents"
+    ])
+  end
 
   @print_opts [
     print_to_pdf: %{
@@ -873,7 +884,7 @@ defmodule Backend.Documents do
   # user input reaches the template compiler.
   defp render_pdf(template, assigns) do
     html =
-      @templates_dir
+      templates_dir()
       |> Path.join(template)
       |> EEx.eval_file(assigns: assigns)
 
