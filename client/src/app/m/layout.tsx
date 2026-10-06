@@ -16,6 +16,31 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
+// Shared safe-area wrapper for every /m/* page. ``viewport-fit=cover``
+// (set above) extends the page under the iPhone notch + home-indicator
+// bar so cards slide behind native chrome when installed as a PWA.
+// Padding by ``env(safe-area-inset-*)`` pushes the content back into
+// the actually-visible rectangle without stretching layouts on
+// non-notched devices (``env()`` falls back to 0). Each page's
+// ``sticky top-0`` header sticks to the bottom of this padding, which
+// is the correct answer on both notched (clears the island) and
+// non-notched (touches the top edge) phones.
+function MobileSafeAreaFrame({ children }: { children: ReactNode }) {
+  return (
+    <div
+      className="flex min-h-dvh flex-col"
+      style={{
+        paddingTop: "env(safe-area-inset-top)",
+        paddingBottom: "env(safe-area-inset-bottom)",
+        paddingLeft: "env(safe-area-inset-left)",
+        paddingRight: "env(safe-area-inset-right)",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
 // Hoists the device WS channel above every /m/* route so pings and
 // revoke events land regardless of which mobile page the operator is
 // on. Pages that allow session-token fallback (no paired device)
@@ -27,11 +52,13 @@ export default async function MobileLayout({
 }) {
   const display = await getDeviceDisplay();
 
-  if (!display) return <>{children}</>;
+  if (!display) {
+    return <MobileSafeAreaFrame>{children}</MobileSafeAreaFrame>;
+  }
 
   return (
     <MobileDeviceChannelProvider deviceUuid={display.device_uuid}>
-      {children}
+      <MobileSafeAreaFrame>{children}</MobileSafeAreaFrame>
     </MobileDeviceChannelProvider>
   );
 }
