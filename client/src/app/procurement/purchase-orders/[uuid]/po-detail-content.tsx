@@ -168,7 +168,11 @@ export function PODetailContent({
         backLabel="Back to POs"
       />
 
-      <POPaperworkAlert po={po} invoices={initialInvoices ?? []} />
+      <POPaperworkAlert
+        po={po}
+        invoices={initialInvoices ?? []}
+        prefs={prefs}
+      />
 
       <POWorkflowCard
         po={po}

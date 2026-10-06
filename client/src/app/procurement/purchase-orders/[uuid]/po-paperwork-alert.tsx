@@ -1,12 +1,20 @@
 import { AlertTriangle, CheckCircle2, FileWarning } from "lucide-react";
 import { formatCompanyMoney } from "@/lib/format/company";
-import { getCompanyDefaults } from "@/lib/company/server";
+import type { FormatPrefs } from "@/lib/format/company";
 import type { ProcurementInvoice } from "@/lib/invoices/types";
 import type { PurchaseOrder } from "@/lib/types";
 
 interface Props {
   po: PurchaseOrder;
   invoices: ProcurementInvoice[];
+  /** Company money-formatting prefs. Passed in by the parent so this
+   *  component stays sync + client-safe — the PO detail page shell is
+   *  now a client component (for optimistic status transitions) and
+   *  can't nest an async server component. ``FormatPrefs`` is exactly
+   *  what ``formatCompanyMoney`` reads; the parent fetches
+   *  ``getCompanyDefaults()`` server-side and its payload satisfies
+   *  this shape structurally. */
+  prefs: FormatPrefs | null;
 }
 
 type Severity = "ok" | "info" | "warn" | "danger";
@@ -23,14 +31,13 @@ interface Item {
  * detail page until every step in the chain (ordered → received →
  * invoiced → paid) is settled.
  */
-export async function POPaperworkAlert({ po, invoices }: Props) {
+export function POPaperworkAlert({ po, invoices, prefs }: Props) {
   // Skip pre-ordered + cancelled — those don't have paperwork
   // obligations yet (or any more).
   if (["draft", "pending_approver", "pending_director", "cancelled"].includes(po.status)) {
     return null;
   }
 
-  const prefs = await getCompanyDefaults();
   const items = computeItems(po, invoices, prefs);
 
   if (items.length === 0) return null;
@@ -115,7 +122,7 @@ function rank(s: Severity): number {
 function computeItems(
   po: PurchaseOrder,
   invoices: ProcurementInvoice[],
-  prefs: Awaited<ReturnType<typeof getCompanyDefaults>>,
+  prefs: FormatPrefs | null,
 ): Item[] {
   const items: Item[] = [];
   const today = new Date().toISOString().slice(0, 10);
