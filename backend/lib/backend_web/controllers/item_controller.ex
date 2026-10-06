@@ -52,13 +52,18 @@ defmodule BackendWeb.ItemController do
   end
 
   @doc """
-  GET /api/items/:id/price-history
+  GET /api/items/:item_id/price-history
   Returns the recent-prices feed for the PO wizard's unit-price
   popover — PO-line history (primary source) with a vendor-cache
   fallback for tenants with no POs yet. See
   `Backend.Items.price_history/3`.
+
+  Nested under ``resources "/items"`` so Phoenix passes the parent
+  uuid as ``item_id`` (not ``id``) — matches the convention the
+  sibling nested routes (``ItemImageController``, etc.) already
+  follow.
   """
-  def price_history(conn, %{"id" => uuid} = params) do
+  def price_history(conn, %{"item_id" => uuid} = params) do
     actor = conn.assigns.current_user
     data = Items.price_history(actor.company_id, uuid, limit: params["limit"])
     json(conn, data)
