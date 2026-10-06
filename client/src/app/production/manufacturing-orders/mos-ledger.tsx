@@ -148,10 +148,10 @@ const STREAM_TABS: Array<{ value: Stream; label: string; hint: string }> = [
 
 function StreamTabStrip({
   stream,
-  onChange,
+  hrefFor,
 }: {
   stream: Stream;
-  onChange: (next: Stream) => void;
+  hrefFor: (value: Stream) => string;
 }) {
   return (
     <div
@@ -162,18 +162,25 @@ function StreamTabStrip({
       {STREAM_TABS.map((t) => {
         const active = t.value === stream;
         return (
-          <button
+          // Next ``<Link>`` instead of a button + ``router.replace``.
+          // The replace path intermittently refused to re-run the
+          // server component on sandbox even after we added
+          // ``force-dynamic`` + bumped the Router Cache — the operator
+          // was clicking and seeing no visible change. Link navigation
+          // goes through the standard RSC prefetch + commit pipeline,
+          // which does invalidate reliably, and keeps the URL as the
+          // source of truth (so cmd-click to open in a new tab works
+          // too). ``scroll={false}`` so flipping streams doesn't jump
+          // back to the top of the page.
+          <Link
             key={t.value}
-            type="button"
+            href={hrefFor(t.value)}
             role="tab"
             aria-selected={active}
             title={t.hint}
-            onClick={() => onChange(t.value)}
+            scroll={false}
+            prefetch={false}
             className={cn(
-              // Tailwind v4 drops the browser-default ``cursor: pointer``
-              // on <button>, so raw buttons read as un-clickable (cursor
-              // stays as the arrow). Add it explicitly so the stream
-              // tabs feel like tabs on hover.
               "cursor-pointer rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
               active
                 ? "bg-background text-foreground shadow-sm"
@@ -181,7 +188,7 @@ function StreamTabStrip({
             )}
           >
             {t.label}
-          </button>
+          </Link>
         );
       })}
     </div>
@@ -229,18 +236,22 @@ export function ManufacturingOrdersLedger({
     }
   }, [pathname, router, searchParams, stream]);
 
-  function chooseStream(next: Stream) {
-    if (next === stream) return;
+  // Each tab is a ``<Link>`` carrying the current query params +
+  // overridden ``stream`` key, so the operator can cmd-click to open
+  // the other stream in a new tab and the back / forward buttons
+  // navigate between the three tabs honestly. ``production`` strips
+  // the param entirely so the canonical URL for the default view is
+  // ``/manufacturing-orders`` (clean, book-markable).
+  const hrefFor = (next: Stream) => {
     const qs = new URLSearchParams(searchParams.toString());
-    qs.set("stream", next);
-    router.replace(`${pathname}?${qs.toString()}`);
-    // Kick the server component to re-render with the new
-    // searchParams so `initialPage` + `initialStream` refresh in
-    // lockstep. Without this, Next.js may serve the cached RSC
-    // from the previous tab, and the ledger's `boundInitialPage`
-    // branch has to compensate.
-    router.refresh();
-  }
+    if (next === "production") {
+      qs.delete("stream");
+    } else {
+      qs.set("stream", next);
+    }
+    const q = qs.toString();
+    return q ? `${pathname}?${q}` : pathname;
+  };
 
   const fetchPage = useMemo(() => buildFetchPage(stream), [stream]);
 
@@ -583,7 +594,7 @@ export function ManufacturingOrdersLedger({
 
   return (
     <div className="space-y-3">
-      <StreamTabStrip stream={stream} onChange={chooseStream} />
+      <StreamTabStrip stream={stream} hrefFor={hrefFor} />
       <DataTable<ManufacturingOrderSummary>
         // `key` forces a full remount when the stream flips so any
         // in-flight cursors / persisted column filters from the old
