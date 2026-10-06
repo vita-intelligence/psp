@@ -21,7 +21,7 @@ defmodule BackendWeb.ItemController do
   alias BackendWeb.{Errors, Payloads}
   alias BackendWeb.Plugs.RequirePermission
 
-  plug RequirePermission, "items.view" when action in [:index, :show]
+  plug RequirePermission, "items.view" when action in [:index, :show, :price_history]
   plug RequirePermission, "items.create" when action in [:create]
   plug RequirePermission, "items.edit"
        when action in [:update, :update_full, :mark_ready, :revert_to_draft]
@@ -49,6 +49,19 @@ defmodule BackendWeb.ItemController do
       nil -> {:error, :not_found}
       item -> json(conn, %{item: Payloads.item(item)})
     end
+  end
+
+  @doc """
+  GET /api/items/:id/price-history
+  Returns the recent-prices feed for the PO wizard's unit-price
+  popover — PO-line history (primary source) with a vendor-cache
+  fallback for tenants with no POs yet. See
+  `Backend.Items.price_history/3`.
+  """
+  def price_history(conn, %{"id" => uuid} = params) do
+    actor = conn.assigns.current_user
+    data = Items.price_history(actor.company_id, uuid, limit: params["limit"])
+    json(conn, data)
   end
 
   def create(conn, params) do

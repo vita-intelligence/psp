@@ -140,6 +140,145 @@ defmodule Backend.Items do
   def get_for_company(_company_id, _), do: nil
 
   @doc """
+  Rolling price history for a single item, across vendors. Powers the
+  "History" popover on the PO wizard's unit-price cell so the buyer
+  can eyeball what we've paid before signing.
+
+  Primary source: ``purchase_order_lines`` on POs that have been
+  ordered (``submitted_at`` isn't the right pivot — a draft can
+  linger with any price; we want prices PSP actually committed to
+  the supplier) OR progressed past that. The join to ``purchase_orders``
+  carries vendor identity + the ``ordered_at`` timestamp used for
+  the "when" column.
+
+  Fallback: ``vendor_item_prices`` cached last-paid rows. Only
+  surfaced when the PO-lines query returns zero (fresh tenants + the
+  sandbox start here) so the operator still sees something.
+
+  Returns ``%{entries: [...], source: "po_history" | "vendor_cache"}``
+  with each entry shaped as ``{vendor_id, vendor_uuid, vendor_name,
+  unit_price, currency_code, qty, paid_at, po_code | nil}``. Ordered
+  most-recent first, capped at ``:limit`` (default 15, max 50).
+  """
+  def price_history(company_id, item_uuid, opts \\ [])
+
+  def price_history(company_id, item_uuid, opts) when is_binary(item_uuid) do
+    with {:ok, cast_uuid} <- Ecto.UUID.cast(item_uuid),
+         %Item{id: item_id} <-
+           Repo.one(
+             from(i in Item,
+               where: i.company_id == ^company_id and i.uuid == ^cast_uuid,
+               select: %Item{id: i.id, uuid: i.uuid}
+             )
+           ) do
+      limit = clamp_history_limit(Keyword.get(opts, :limit, 15))
+
+      po_rows =
+        from(line in Backend.Purchasing.PurchaseOrderLine,
+          join: po in Backend.Purchasing.PurchaseOrder,
+          on: po.id == line.purchase_order_id,
+          join: v in Backend.Vendors.Vendor,
+          on: v.id == po.vendor_id,
+          where:
+            line.company_id == ^company_id and
+              line.item_id == ^item_id and
+              po.status in ^~w(ordered partially_received received closed) and
+              not is_nil(po.ordered_at),
+          order_by: [desc: po.ordered_at, desc: line.id],
+          limit: ^limit,
+          select: %{
+            vendor_id: v.id,
+            vendor_uuid: v.uuid,
+            vendor_name: v.name,
+            unit_price: line.unit_price,
+            currency_code: po.currency_code,
+            qty: line.qty_ordered,
+            paid_at: po.ordered_at,
+            po_id: po.id,
+            po_uuid: po.uuid
+          }
+        )
+        |> Repo.all()
+
+      cond do
+        po_rows != [] ->
+          %{
+            entries: Enum.map(po_rows, &po_history_entry/1),
+            source: "po_history"
+          }
+
+        true ->
+          cache_rows =
+            from(p in Backend.Purchasing.VendorItemPrice,
+              join: v in Backend.Vendors.Vendor,
+              on: v.id == p.vendor_id,
+              where:
+                p.company_id == ^company_id and
+                  p.item_id == ^item_id,
+              order_by: [desc: p.last_paid_at],
+              limit: ^limit,
+              select: %{
+                vendor_id: v.id,
+                vendor_uuid: v.uuid,
+                vendor_name: v.name,
+                unit_price: p.unit_price,
+                currency_code: p.currency_code,
+                qty: p.qty_purchased,
+                paid_at: p.last_paid_at
+              }
+            )
+            |> Repo.all()
+
+          %{
+            entries: Enum.map(cache_rows, &cache_history_entry/1),
+            source: "vendor_cache"
+          }
+      end
+    else
+      _ -> %{entries: [], source: "none"}
+    end
+  end
+
+  def price_history(_company_id, _, _), do: %{entries: [], source: "none"}
+
+  defp clamp_history_limit(v) when is_integer(v) and v > 0, do: min(v, 50)
+  defp clamp_history_limit(v) when is_binary(v) do
+    case Integer.parse(v) do
+      {n, _} when n > 0 -> min(n, 50)
+      _ -> 15
+    end
+  end
+  defp clamp_history_limit(_), do: 15
+
+  defp po_history_entry(row) do
+    %{
+      vendor_id: row.vendor_id,
+      vendor_uuid: to_string(row.vendor_uuid),
+      vendor_name: row.vendor_name,
+      unit_price: row.unit_price && Decimal.to_string(row.unit_price),
+      currency_code: row.currency_code,
+      qty: row.qty && Decimal.to_string(row.qty),
+      paid_at: row.paid_at,
+      po_uuid: row.po_uuid && to_string(row.po_uuid),
+      po_code: BackendWeb.Payloads.render_entity_code(%{id: row.po_id}, "purchase_order")
+    }
+  end
+
+  defp cache_history_entry(row) do
+    %{
+      vendor_id: row.vendor_id,
+      vendor_uuid: to_string(row.vendor_uuid),
+      vendor_name: row.vendor_name,
+      unit_price: row.unit_price && Decimal.to_string(row.unit_price),
+      currency_code: row.currency_code,
+      qty: row.qty && Decimal.to_string(row.qty),
+      paid_at: row.paid_at,
+      po_uuid: nil,
+      po_code: nil
+    }
+  end
+
+  @doc """
   Show variant that preloads the per-type compliance subtable +
   allergens. Used by the items show endpoint so the FE form renders
   the right sub-form on first paint. List endpoints stick with the

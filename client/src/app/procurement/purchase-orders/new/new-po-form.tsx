@@ -33,6 +33,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { formatQtyHumanized } from "@/lib/format/company";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { PriceHistoryPopover } from "./price-history-popover";
 import {
   Select,
   SelectContent,
@@ -1556,24 +1557,32 @@ export function NewPOForm({
                             aria-label={`Line ${i + 1} unit price`}
                             className="h-9 text-right font-mono text-xs"
                           />
-                          {line.last_paid_price && (
-                            <p
-                              className={cn(
-                                "mt-0.5 flex items-center justify-end gap-1 text-[10px]",
-                                deviation && deviation.abs >= 20
-                                  ? "text-amber-600"
-                                  : "text-muted-foreground",
-                              )}
-                              title={`Last paid ${line.last_paid_price} on ${line.last_paid_at?.slice(0, 10)}`}
-                            >
-                              {deviation && deviation.abs >= 20 && (
-                                <AlertTriangle className="size-3" />
-                              )}
-                              Last {line.last_paid_price}
-                              {deviation &&
-                                ` (${deviation.sign}${deviation.abs.toFixed(0)}%)`}
-                            </p>
-                          )}
+                          <div className="mt-0.5 flex items-center justify-end gap-2">
+                            {line.last_paid_price && (
+                              <p
+                                className={cn(
+                                  "flex items-center gap-1 text-[10px]",
+                                  deviation && deviation.abs >= 20
+                                    ? "text-amber-600"
+                                    : "text-muted-foreground",
+                                )}
+                                title={`Last paid ${line.last_paid_price} on ${line.last_paid_at?.slice(0, 10)}`}
+                              >
+                                {deviation && deviation.abs >= 20 && (
+                                  <AlertTriangle className="size-3" />
+                                )}
+                                Last {line.last_paid_price}
+                                {deviation &&
+                                  ` (${deviation.sign}${deviation.abs.toFixed(0)}%)`}
+                              </p>
+                            )}
+                            {item?.uuid && (
+                              <PriceHistoryPopover
+                                itemUuid={item.uuid}
+                                itemName={item.label}
+                              />
+                            )}
+                          </div>
                         </td>
                         <td className="px-2 py-2 text-right font-mono text-xs">
                           {subtotal.toFixed(2)}

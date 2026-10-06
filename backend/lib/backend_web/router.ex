@@ -380,6 +380,11 @@ defmodule BackendWeb.Router do
     # finished_product / packaging) are managed by sibling controllers
     # and stitched in by the item payload shaper.
     resources "/items", ItemController, except: [:new, :edit] do
+      # Rolling price history for the PO wizard's unit-price popover —
+      # recent PO-line prices across vendors, with a vendor-cache
+      # fallback for tenants that have no PO history yet.
+      get "/price-history", ItemController, :price_history
+
       # Atomic mega-save: identity + per-type compliance subtable in
       # one transaction. Used by the unified item-edit form.
       put "/full", ItemController, :update_full
