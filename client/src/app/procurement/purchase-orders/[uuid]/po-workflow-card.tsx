@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
@@ -74,6 +74,27 @@ export function POWorkflowCard({
     debug?: ErrorDebug;
   } | null>(null);
 
+  // Optimistic PO override — every mutation (sign / submit / mark-
+  // ordered / cancel) returns the fresh row, so we stash it here and
+  // all status-dependent reads inside this card (buttons, step rows,
+  // approval chips) flip in the same tick as the backend response.
+  // ``router.refresh()`` still fires behind the scenes so the hero
+  // badge + other cards eventually catch up; the useEffect below
+  // clears the override once the parent's ``po`` prop advances past
+  // (or matches) our optimistic snapshot. Keeps the card feeling
+  // instant without hoisting state to a page-level shell — that
+  // version broke rendering with a boundary mismatch.
+  const [optimisticPo, setOptimisticPo] = useState<PurchaseOrder | null>(null);
+  const effectivePo = optimisticPo ?? po;
+  useEffect(() => {
+    if (!optimisticPo) return;
+    const parentFresh =
+      po.updated_at && optimisticPo.updated_at
+        ? po.updated_at >= optimisticPo.updated_at
+        : false;
+    if (parentFresh) setOptimisticPo(null);
+  }, [po, optimisticPo]);
+
   function openSignDialog(kind: "approver" | "director") {
     setNotes("");
     setError(null);
@@ -89,12 +110,16 @@ export function POWorkflowCard({
   function runDirect(promise: Promise<unknown>, label: string) {
     setError(null);
     startTransition(async () => {
-      const res = (await promise) as { ok: boolean } & ErrorDebug & {
+      const res = (await promise) as {
+        ok: boolean;
+        po?: PurchaseOrder;
+      } & ErrorDebug & {
           detail?: string;
           code?: string;
         };
       if (res.ok) {
         toast.success(label);
+        if (res.po) setOptimisticPo(res.po);
         router.refresh();
       } else {
         const ed = res as unknown as {
@@ -124,6 +149,7 @@ export function POWorkflowCard({
       if (res.ok) {
         toast.success("Signed");
         setOpenDialog(null);
+        if (res.po) setOptimisticPo(res.po);
         router.refresh();
       } else {
         setError({ detail: res.detail, code: res.code, debug: res.debug });
@@ -145,6 +171,7 @@ export function POWorkflowCard({
       if (res.ok) {
         toast.success("PO cancelled");
         setOpenDialog(null);
+        if (res.po) setOptimisticPo(res.po);
         router.refresh();
       } else {
         setError({ detail: res.detail, code: res.code, debug: res.debug });
@@ -152,8 +179,8 @@ export function POWorkflowCard({
     });
   }
 
-  const approverSig = po.approvals.find((a) => a.kind === "approver");
-  const directorSig = po.approvals.find((a) => a.kind === "director");
+  const approverSig = effectivePo.approvals.find((a) => a.kind === "approver");
+  const directorSig = effectivePo.approvals.find((a) => a.kind === "director");
 
   return (
     <section className="space-y-4 rounded-lg border border-border/60 bg-card p-5 shadow-sm">
@@ -163,21 +190,21 @@ export function POWorkflowCard({
       </header>
 
       <StepRow
-        status={po.status}
+        status={effectivePo.status}
         step="draft"
         label="Draft"
-        actor={po.created_by ?? null}
-        timestamp={po.inserted_at}
+        actor={effectivePo.created_by ?? null}
+        timestamp={effectivePo.inserted_at}
       />
       <StepRow
-        status={po.status}
+        status={effectivePo.status}
         step="pending_approver"
         label="Submitted for approval"
-        actor={po.submitted_by}
-        timestamp={po.submitted_at}
+        actor={effectivePo.submitted_by}
+        timestamp={effectivePo.submitted_at}
       />
       <StepRow
-        status={po.status}
+        status={effectivePo.status}
         step="pending_director"
         label="Approver sign-off"
         actor={approverSig?.signed_by ?? null}
@@ -185,7 +212,7 @@ export function POWorkflowCard({
         notes={approverSig?.notes ?? null}
       />
       <StepRow
-        status={po.status}
+        status={effectivePo.status}
         step="approved"
         label="Authoriser sign-off"
         actor={directorSig?.signed_by ?? null}
@@ -193,11 +220,11 @@ export function POWorkflowCard({
         notes={directorSig?.notes ?? null}
       />
       <StepRow
-        status={po.status}
+        status={effectivePo.status}
         step="ordered"
         label="Order placed with vendor"
-        actor={po.ordered_by}
-        timestamp={po.ordered_at}
+        actor={effectivePo.ordered_by}
+        timestamp={effectivePo.ordered_at}
       />
       {/* "Received" rolls in once the goods-in operator signs the
           inspection on the phone — that flow auto-calls
@@ -205,20 +232,20 @@ export function POWorkflowCard({
           operator. Empty state (no actor, no timestamp) renders as
           pending until that happens. */}
       <StepRow
-        status={po.status}
+        status={effectivePo.status}
         step="received"
         label="Received"
-        actor={po.received_by}
-        timestamp={po.received_at}
+        actor={effectivePo.received_by}
+        timestamp={effectivePo.received_at}
       />
 
-      {po.status === "cancelled" && (
+      {effectivePo.status === "cancelled" && (
         <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm">
           <p className="font-medium text-destructive">
-            Cancelled by {po.cancelled_by?.name ?? "—"}
+            Cancelled by {effectivePo.cancelled_by?.name ?? "—"}
           </p>
-          {po.cancellation_reason && (
-            <p className="mt-1 text-xs">{po.cancellation_reason}</p>
+          {effectivePo.cancellation_reason && (
+            <p className="mt-1 text-xs">{effectivePo.cancellation_reason}</p>
           )}
         </div>
       )}
@@ -234,7 +261,7 @@ export function POWorkflowCard({
       {locked && <PageLockBanner leader={leader} />}
       <PageLockGuard pageId={pageId ?? ""} disabled={!pageId}>
         <div className="flex flex-wrap gap-2">
-          {po.status === "draft" && canCancel && (
+          {effectivePo.status === "draft" && canCancel && (
             <Button
               size="sm"
               variant="outline"
@@ -246,14 +273,14 @@ export function POWorkflowCard({
               Edit header
             </Button>
           )}
-          {po.status === "draft" && canSubmit && (
+          {effectivePo.status === "draft" && canSubmit && (
             <Button size="sm" onClick={onSubmit} disabled={pending || locked}>
               {pending && <Loader2 className="mr-1.5 size-4 animate-spin" />}
               <Send className="mr-1.5 size-4" />
               Submit for approval
             </Button>
           )}
-          {po.status === "pending_approver" && canApprove && (
+          {effectivePo.status === "pending_approver" && canApprove && (
             <Button
               size="sm"
               onClick={() => {
@@ -266,7 +293,7 @@ export function POWorkflowCard({
               Sign as approver
             </Button>
           )}
-          {po.status === "pending_director" && canDirectorApprove && (
+          {effectivePo.status === "pending_director" && canDirectorApprove && (
             <Button
               size="sm"
               onClick={() => {
@@ -279,7 +306,7 @@ export function POWorkflowCard({
               Sign as authoriser
             </Button>
           )}
-          {po.status === "approved" && canDirectorApprove && (
+          {effectivePo.status === "approved" && canDirectorApprove && (
             <Button
               size="sm"
               onClick={onMarkOrdered}
@@ -291,7 +318,7 @@ export function POWorkflowCard({
             </Button>
           )}
           {canCancel &&
-            !["received", "cancelled"].includes(po.status) && (
+            !["received", "cancelled"].includes(effectivePo.status) && (
               <Button
                 size="sm"
                 variant="outline"
