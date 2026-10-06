@@ -48,12 +48,6 @@ interface Props {
   canDirectorApprove: boolean;
   canCancel: boolean;
   pageId?: string;
-  /** Hoisted-state hook from the page shell. Every mutation that
-   *  returns a fresh PO (sign, submit, mark-ordered, cancel) calls
-   *  this with the new row so the hero / status badge / buttons swap
-   *  instantly — the operator doesn't wait on the full page re-fetch
-   *  that ``router.refresh()`` would otherwise block on. */
-  onPoChange?: (po: PurchaseOrder) => void;
 }
 
 type DialogAction = "approver" | "director" | "cancel" | null;
@@ -64,7 +58,6 @@ export function POWorkflowCard({
   canApprove,
   canDirectorApprove,
   canCancel,
-  onPoChange,
   pageId,
 }: Props) {
   const router = useRouter();
@@ -93,34 +86,16 @@ export function POWorkflowCard({
     setOpenDialog("cancel");
   }
 
-  // Shell-provided swap for the fresh PO. Falls back to
-  // ``router.refresh()`` so callers mounted outside the shell (none
-  // currently, but the hook is a safer fallback than silently
-  // regressing to a stale badge).
-  const applyFreshPo = (fresh: PurchaseOrder | undefined) => {
-    if (fresh && onPoChange) {
-      onPoChange(fresh);
-    } else {
-      router.refresh();
-    }
-  };
-
-  function runDirect(
-    promise: Promise<unknown>,
-    label: string,
-  ) {
+  function runDirect(promise: Promise<unknown>, label: string) {
     setError(null);
     startTransition(async () => {
-      const res = (await promise) as {
-        ok: boolean;
-        po?: PurchaseOrder;
-      } & ErrorDebug & {
+      const res = (await promise) as { ok: boolean } & ErrorDebug & {
           detail?: string;
           code?: string;
         };
       if (res.ok) {
         toast.success(label);
-        applyFreshPo(res.po);
+        router.refresh();
       } else {
         const ed = res as unknown as {
           detail: string;
@@ -149,7 +124,7 @@ export function POWorkflowCard({
       if (res.ok) {
         toast.success("Signed");
         setOpenDialog(null);
-        applyFreshPo(res.po);
+        router.refresh();
       } else {
         setError({ detail: res.detail, code: res.code, debug: res.debug });
       }
@@ -170,7 +145,7 @@ export function POWorkflowCard({
       if (res.ok) {
         toast.success("PO cancelled");
         setOpenDialog(null);
-        applyFreshPo(res.po);
+        router.refresh();
       } else {
         setError({ detail: res.detail, code: res.code, debug: res.debug });
       }
